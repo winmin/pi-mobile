@@ -141,7 +141,7 @@ struct HomeView: View {
 
     private func quickActions(_ theme: PiTheme) -> some View {
         HStack(spacing: 10) {
-            quickAction("New Session", "plus.bubble", theme) { model.newSession() }
+            quickAction("New Session", "plus.bubble", theme) { model.presentNewSession() }
             quickAction("Timeline", "point.topleft.down.to.point.bottomright.curvepath", theme) { model.route = .timeline }
             quickAction("Settings", "gearshape", theme) { model.route = .settings }
         }

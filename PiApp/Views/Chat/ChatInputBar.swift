@@ -3,6 +3,7 @@ import SwiftUI
 struct ChatInputBar: View {
     @Environment(AppModel.self) private var model
     @State private var prompt = ""
+    @FocusState private var inputFocused: Bool
 
     private var session: ChatSession? { model.activeSession }
     private var isBusy: Bool {
@@ -22,6 +23,8 @@ struct ChatInputBar: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: model.chatFontSize))
                     .foregroundStyle(theme.textPrimary)
+                    .focused($inputFocused)
+                    .layoutPriority(1)
                     .onSubmit(send)
                 sendOrStopButton(theme)
             }
@@ -36,6 +39,13 @@ struct ChatInputBar: View {
         .padding(.top, 8)
         .padding(.bottom, 4)
         .background(theme.appBG)
+#if DEBUG
+        .onAppear {
+            if ProcessInfo.processInfo.arguments.contains("-uiFocusInput") {
+                inputFocused = true
+            }
+        }
+#endif
     }
 
     // MARK: - Permission mode menu
@@ -98,9 +108,9 @@ struct ChatInputBar: View {
     private func caption(_ theme: PiTheme) -> some View {
         HStack(spacing: 4) {
             if let session {
-                Text("\(displayModel(for: session)) · \(model.permissionMode.rawValue) · \(formatTokenCount(session.usage.total)) tokens · \(formatCost(session.usage.costUSD))")
+                Text("\(backendAndModel(for: session)) · \(model.permissionMode.rawValue) · \(formatTokenCount(session.usage.total)) tokens · \(formatCost(session.usage.costUSD))")
             } else {
-                Text("\(displayModel(for: nil)) · \(model.permissionMode.rawValue) · No session")
+                Text("\(backendAndModel(for: nil)) · \(model.permissionMode.rawValue) · No session")
             }
             Spacer()
         }
@@ -109,11 +119,15 @@ struct ChatInputBar: View {
         .padding(.horizontal, 6)
     }
 
-    private func displayModel(for session: ChatSession?) -> String {
-        if model.backend == .directAPI {
-            return model.providerStore.activeModelID ?? "no model"
+    private func backendAndModel(for session: ChatSession?) -> String {
+        switch model.backend {
+        case .directAPI:
+            return "Direct · \(model.providerStore.activeModelID ?? "no model")"
+        case .remotePi:
+            return "Remote Pi · \(model.remotePiStore.activeModelName ?? "detecting model…")"
+        case .webSocket:
+            return "Remote WebSocket"
         }
-        return session?.model ?? "no model"
     }
 
     private func send() {

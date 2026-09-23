@@ -31,7 +31,7 @@ struct ProvidersSettingsView: View {
                             Spacer()
                             authBadge(provider, theme)
                         }
-                        Text("\(provider.api.rawValue) · \(provider.baseUrl.isEmpty ? "no base URL" : provider.baseUrl)")
+                        Text(connectionDescription(for: provider))
                             .font(.caption2.monospaced())
                             .foregroundStyle(theme.textMuted)
                             .lineLimit(1)
@@ -73,6 +73,13 @@ struct ProvidersSettingsView: View {
                 .font(.caption2)
                 .foregroundStyle(theme.textFaint)
         }
+    }
+
+    private func connectionDescription(for provider: AIProvider) -> String {
+        if provider.id == "openai", case .oauth? = store.credential(for: provider.id) {
+            return "openai-codex-responses · chatgpt.com/backend-api"
+        }
+        return "\(provider.api.rawValue) · \(provider.baseUrl.isEmpty ? "no base URL" : provider.baseUrl)"
     }
 }
 
@@ -159,9 +166,33 @@ struct ProviderDetailView: View {
                     } label: {
                         Label("Sign in with ChatGPT (device code)", systemImage: "person.crop.circle.badge.checkmark")
                     }
-                    Text("ChatGPT sign-in is login only — the Codex chat adapter is coming later. Use an API key for chat.")
+                    Text("ChatGPT OAuth uses your Codex access and is routed through the Codex Responses adapter. API keys continue to use the Base URL above.")
                         .font(.caption2)
                         .foregroundStyle(theme.textMuted)
+
+                    if case .oauth? = store.credential(for: providerID) {
+                        LabeledContent("Codex models", value: "\(store.availableModels(for: provider ?? AIProvider(id: providerID, name: "OpenAI", baseUrl: "", api: .openaiCompletions, models: [])).count)")
+                        Button {
+                            Task { try? await store.refreshCodexModels() }
+                        } label: {
+                            if store.isRefreshingCodexModels {
+                                Label("Refreshing models…", systemImage: "arrow.triangle.2.circlepath")
+                            } else {
+                                Label("Refresh model list", systemImage: "arrow.clockwise")
+                            }
+                        }
+                        .disabled(store.isRefreshingCodexModels)
+                        if let error = store.codexModelsRefreshError {
+                            Text(error)
+                                .font(.caption2)
+                                .foregroundStyle(theme.warning)
+                                .textSelection(.enabled)
+                        } else if let updated = store.codexModelsLastUpdated {
+                            Text("Updated \(updated.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption2)
+                                .foregroundStyle(theme.textMuted)
+                        }
+                    }
                 }
 
                 if store.credential(for: providerID) != nil {
@@ -328,7 +359,7 @@ struct CodexLoginSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("Login only — the Codex chat adapter is coming later.")
+                Text("After sign-in, choose a Codex model and use the Direct API backend.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -351,11 +382,22 @@ struct CodexLoginSheet: View {
                 let (code, url, poll) = try await model.providerStore.oauth.startCodexDeviceLogin()
                 userCode = code
                 verificationURL = url
-                status = "Waiting for authorization…"
+                status = "Finish in the browser, then return here…"
                 openURL(url)
+                // Give iOS time to finish the foreground → Safari transition.
+                // OAuthManager will wait until this app is active before polling.
+                try await Task.sleep(nanoseconds: 750_000_000)
                 let credential = try await poll()
                 model.providerStore.setCredential(credential, for: providerID)
-                status = "Signed in ✓"
+                status = "Loading available models…"
+                do {
+                    let models = try await model.providerStore.refreshCodexModels()
+                    status = "Signed in · \(models.count) models loaded ✓"
+                } catch {
+                    // Authentication succeeded. Keep the bundled catalog as a
+                    // fallback and let the user retry model discovery later.
+                    status = "Signed in · using bundled model list ✓"
+                }
                 try? await Task.sleep(nanoseconds: 800_000_000)
                 dismiss()
             } catch is CancellationError {

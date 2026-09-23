@@ -20,7 +20,7 @@ struct CommandPaletteView: View {
             }
         }
         result.append(PaletteCommand(icon: "plus.bubble", title: "New Session") { model in
-            model.newSession()
+            model.presentNewSession()
         })
         if model.activeSession?.status == .running {
             result.append(PaletteCommand(icon: "stop.circle", title: "Abort Current Run") { model in

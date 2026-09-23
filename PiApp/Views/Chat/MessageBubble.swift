@@ -106,56 +106,6 @@ struct ThinkingBlock: View {
     }
 }
 
-// MARK: - Markdown-ish text (code fence aware)
-
-struct MarkdownText: View {
-    @Environment(AppModel.self) private var model
-    let text: String
-    var fontSize: Double = 16
-
-    private var segments: [(code: Bool, body: String)] {
-        var result: [(Bool, String)] = []
-        let parts = text.components(separatedBy: "```")
-        for (index, part) in parts.enumerated() {
-            if index % 2 == 1 {
-                var code = part
-                if let newline = code.firstIndex(of: "\n") {
-                    let language = code[code.startIndex..<newline]
-                    if !language.contains(" ") && language.count <= 20 {
-                        code = String(code[code.index(after: newline)...])
-                    }
-                }
-                result.append((true, code.trimmingCharacters(in: .newlines)))
-            } else if !part.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                result.append((false, part))
-            }
-        }
-        return result
-    }
-
-    var body: some View {
-        let theme = model.theme
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                if segment.code {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        Text(segment.body)
-                            .font(.system(size: max(fontSize - 2, 9), design: .monospaced))
-                            .foregroundStyle(theme.textPrimary)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .padding(10)
-                    }
-                    .background(theme.codeBG, in: RoundedRectangle(cornerRadius: 8))
-                } else {
-                    Text(LocalizedStringKey(segment.body))
-                        .font(.system(size: fontSize))
-                        .foregroundStyle(theme.textPrimary)
-                }
-            }
-        }
-    }
-}
-
 // MARK: - Tool call card
 
 struct ToolCallCard: View {

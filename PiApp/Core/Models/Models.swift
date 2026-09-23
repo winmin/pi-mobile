@@ -145,6 +145,8 @@ struct ChatSession: Identifiable, Equatable, Codable {
     var title: String
     var project: String
     var model: String
+    /// Nil only for sessions saved before per-session backend selection was added.
+    var backend: BackendKind?
     var messages: [ChatMessage]
     var status: SessionStatus
     var usage: TokenUsage
@@ -153,6 +155,7 @@ struct ChatSession: Identifiable, Equatable, Codable {
     var isArchived: Bool
 
     init(id: UUID = UUID(), title: String, project: String, model: String,
+         backend: BackendKind? = nil,
          messages: [ChatMessage] = [], status: SessionStatus = .idle,
          usage: TokenUsage = TokenUsage(), createdAt: Date = Date(),
          updatedAt: Date = Date(), isArchived: Bool = false) {
@@ -160,6 +163,7 @@ struct ChatSession: Identifiable, Equatable, Codable {
         self.title = title
         self.project = project
         self.model = model
+        self.backend = backend
         self.messages = messages
         self.status = status
         self.usage = usage

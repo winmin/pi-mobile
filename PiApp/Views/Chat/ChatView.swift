@@ -12,16 +12,26 @@ struct ChatView: View {
 
     var body: some View {
         let theme = model.theme
-        VStack(spacing: 0) {
+        Group {
             if let session = model.activeSession, !session.messages.isEmpty {
                 messageList(session)
             } else {
                 emptyState(theme)
             }
-            Rectangle().fill(theme.border).frame(height: 0.5)
-            ChatInputBar()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.appBG)
+        // Keeping the composer in a safe-area inset makes SwiftUI move the
+        // whole bar above the keyboard on its very first presentation. A
+        // bottom item in the main VStack can be compressed/clipped while the
+        // keyboard safe area is animating, especially for a brand-new chat.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Rectangle().fill(theme.border).frame(height: 0.5)
+                ChatInputBar()
+            }
+            .background(theme.appBG)
+        }
         .navigationTitle(model.activeSession?.title ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -41,6 +51,8 @@ struct ChatView: View {
                 }
                 .padding(16)
             }
+            .scrollDismissesKeyboard(.interactively)
+            .defaultScrollAnchor(.bottom)
             .onAppear {
                 proxy.scrollTo("chat-bottom", anchor: .bottom)
             }
@@ -64,32 +76,36 @@ struct ChatView: View {
     // MARK: - Empty state
 
     private func emptyState(_ theme: PiTheme) -> some View {
-        VStack(spacing: 20) {
-            Spacer()
-            PiGlyph(size: 52)
-            Text("What should Pi work on?")
-                .font(.title2.bold())
-                .foregroundStyle(theme.textPrimary)
-            VStack(spacing: 8) {
-                ForEach(suggestions, id: \.self) { suggestion in
-                    Button {
-                        model.send(prompt: suggestion)
-                    } label: {
-                        Text(suggestion)
-                            .font(.callout)
-                            .foregroundStyle(theme.textSecondary)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 9)
-                            .background(theme.surface2, in: Capsule())
-                            .overlay(Capsule().stroke(theme.border, lineWidth: 0.5))
+        ScrollView {
+            VStack(spacing: 20) {
+                Spacer(minLength: 24)
+                PiGlyph(size: 52)
+                Text("What should Pi work on?")
+                    .font(.title2.bold())
+                    .foregroundStyle(theme.textPrimary)
+                VStack(spacing: 8) {
+                    ForEach(suggestions, id: \.self) { suggestion in
+                        Button {
+                            model.send(prompt: suggestion)
+                        } label: {
+                            Text(suggestion)
+                                .font(.callout)
+                                .foregroundStyle(theme.textSecondary)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 9)
+                                .background(theme.surface2, in: Capsule())
+                                .overlay(Capsule().stroke(theme.border, lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
+                Spacer(minLength: 24)
             }
-            Spacer()
+            .frame(maxWidth: .infinity)
+            .containerRelativeFrame(.vertical, alignment: .center)
+            .padding(24)
         }
-        .frame(maxWidth: .infinity)
-        .padding(24)
+        .scrollDismissesKeyboard(.interactively)
     }
 }
 

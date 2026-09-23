@@ -5,6 +5,7 @@ struct RootView: View {
     @State private var preferredColumn: NavigationSplitViewColumn = .detail
 
     var body: some View {
+        @Bindable var model = model
         let theme = model.theme
         NavigationSplitView(preferredCompactColumn: $preferredColumn) {
             sidebar(theme)
@@ -17,6 +18,10 @@ struct RootView: View {
         .tint(theme.accent)
         .background(theme.appBG.ignoresSafeArea())
         .background(paletteShortcutButton)
+        .sheet(isPresented: $model.newSessionPresented) {
+            NewSessionView(initialBackend: model.backend)
+                .environment(model)
+        }
         .overlay {
             if model.palettePresented {
                 CommandPaletteView()
@@ -32,7 +37,7 @@ struct RootView: View {
             Section {
                 HStack(spacing: 10) {
                     PiGlyph(size: 26)
-                    Text("Pi Desktop")
+                    Text("Pi Mobile")
                         .font(.headline)
                         .foregroundStyle(theme.textPrimary)
                 }
@@ -69,7 +74,7 @@ struct RootView: View {
                         ? theme.accent.opacity(0.12) : Color.clear)
                 }
                 Button {
-                    model.newSession()
+                    model.presentNewSession()
                     preferredColumn = .detail
                 } label: {
                     Label("New Session", systemImage: "plus")

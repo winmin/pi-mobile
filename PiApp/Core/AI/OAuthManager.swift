@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Security
+import UIKit
 
 enum OAuthError: LocalizedError {
     case noPendingLogin
@@ -39,7 +40,10 @@ final class OAuthManager {
     // OpenAI Codex
     private static let codexClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
     private static let codexBase = "https://auth.openai.com"
-    private static let codexRedirectURI = "http://localhost:1455/auth/callback"
+    // Device-code authorization uses a different registered redirect than the
+    // browser/PKCE flow. Passing the localhost callback here makes OpenAI issue
+    // token_exchange_user_error after the user has successfully authorized.
+    private static let codexDeviceRedirectURI = "https://auth.openai.com/deviceauth/callback"
 
     private var pendingAnthropicVerifier: String?
 
@@ -94,12 +98,24 @@ final class OAuthManager {
               let userCode = json["user_code"] as? String else {
             throw OAuthError.malformedResponse("missing device_auth_id/user_code")
         }
-        let interval = (json["interval"] as? NSNumber)?.doubleValue ?? 5
+        let interval = (json["interval"] as? NSNumber)?.doubleValue
+            ?? Double(json["interval"] as? String ?? "")
+            ?? 5
         let verificationURL = URL(string: Self.codexBase + "/codex/device")!
 
         let poll: () async throws -> AICredential = { [self] in
             while true {
                 try Task.checkCancellation()
+
+                // Opening the verification page backgrounds this app. Starting
+                // a foreground URLSession request during that transition can
+                // leave it suspended until it eventually times out. Only poll
+                // while the app is active; authorization remains valid for 15m.
+                guard UIApplication.shared.applicationState == .active else {
+                    try await Task.sleep(nanoseconds: 350_000_000)
+                    continue
+                }
+
                 do {
                     let tokenJSON = try await postJSON(Self.codexBase + "/api/accounts/deviceauth/token",
                                                        body: ["device_auth_id": deviceAuthID,
@@ -110,6 +126,13 @@ final class OAuthManager {
                     }
                 } catch OAuthError.http(let status, _) where status == 403 || status == 404 {
                     // Still waiting for the user to authorize.
+                } catch {
+                    guard Self.isTransientNetworkError(error), !Task.isCancelled else {
+                        throw error
+                    }
+#if DEBUG
+                    Self.writeLog("device poll transient error; retrying: \(String(reflecting: error))")
+#endif
                 }
                 try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
@@ -123,7 +146,7 @@ final class OAuthManager {
             "client_id": Self.codexClientID,
             "code": code,
             "code_verifier": verifier,
-            "redirect_uri": Self.codexRedirectURI,
+            "redirect_uri": Self.codexDeviceRedirectURI,
         ])
         guard let access = json["access_token"] as? String else {
             throw OAuthError.malformedResponse("missing access_token")
@@ -230,6 +253,7 @@ final class OAuthManager {
 
     private func postJSON(_ urlString: String, body: [String: Any]) async throws -> [String: Any] {
         var request = URLRequest(url: URL(string: urlString)!)
+        request.timeoutInterval = 15
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -239,6 +263,7 @@ final class OAuthManager {
 
     private func postForm(_ urlString: String, fields: [String: String]) async throws -> [String: Any] {
         var request = URLRequest(url: URL(string: urlString)!)
+        request.timeoutInterval = 30
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = fields
@@ -249,13 +274,60 @@ final class OAuthManager {
     }
 
     private func perform(_ request: URLRequest) async throws -> [String: Any] {
-        let (data, response) = try await HTTPRetry.data(for: request)
+        let endpoint = request.url.map { "\($0.host ?? "unknown")\($0.path)" } ?? "unknown"
+#if DEBUG
+        Self.writeLog("POST \(endpoint)")
+#endif
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await HTTPRetry.data(for: request)
+        } catch {
+#if DEBUG
+            Self.writeLog("\(endpoint) transport failure=\(String(reflecting: error))")
+#endif
+            throw error
+        }
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+#if DEBUG
+        Self.writeLog("\(endpoint) status=\(status) bytes=\(data.count)")
+#endif
         guard (200..<300).contains(status) else {
             let body = String(data: data, encoding: .utf8) ?? ""
+#if DEBUG
+            let safeBody = Self.redactForLog(String(body.prefix(500)))
+            Self.writeLog("\(endpoint) failure=\(safeBody)")
+#endif
             throw OAuthError.http(status, String(body.prefix(500)))
         }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+
+    private static func redactForLog(_ text: String) -> String {
+        text.replacingOccurrences(
+            of: #"(?i)(access_token|refresh_token|authorization_code|code_verifier|bearer)[\"' :=]+[^\"'\s,}]+"#,
+            with: "$1=<redacted>",
+            options: .regularExpression
+        )
+    }
+
+    private static func writeLog(_ message: String) {
+#if DEBUG
+        let line = "[PiMobile][OAuth] \(message)\n"
+        FileHandle.standardError.write(Data(line.utf8))
+#endif
+    }
+
+    private static func isTransientNetworkError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain else { return false }
+        return [
+            NSURLErrorTimedOut,
+            NSURLErrorNetworkConnectionLost,
+            NSURLErrorCannotConnectToHost,
+            NSURLErrorNotConnectedToInternet,
+            NSURLErrorCancelled,
+        ].contains(nsError.code)
     }
 
     private static func formEncode(_ value: String) -> String {

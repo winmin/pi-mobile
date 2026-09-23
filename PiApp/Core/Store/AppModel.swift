@@ -27,12 +27,28 @@ enum AppRoute: String, CaseIterable, Identifiable {
     }
 }
 
-enum BackendKind: String, CaseIterable, Identifiable {
+enum BackendKind: String, CaseIterable, Codable, Identifiable {
     case directAPI = "Direct API (provider)"
-    case mock = "Mock (offline demo)"
     case webSocket = "Remote (WebSocket)"
+    case remotePi = "Remote Pi (plugin)"
 
     var id: String { rawValue }
+
+    var shortName: String {
+        switch self {
+        case .directAPI: return "Direct API"
+        case .webSocket: return "Remote WebSocket"
+        case .remotePi: return "Remote Pi"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .directAPI: return "network"
+        case .webSocket: return "cable.connector"
+        case .remotePi: return "desktopcomputer.and.arrow.down"
+        }
+    }
 }
 
 @MainActor
@@ -41,6 +57,7 @@ final class AppModel {
     // MARK: Navigation
     var route: AppRoute = .home
     var palettePresented = false
+    var newSessionPresented = false
 
     // MARK: Sessions
     var sessions: [ChatSession]
@@ -65,7 +82,11 @@ final class AppModel {
     var backend: BackendKind {
         didSet {
             UserDefaults.standard.set(backend.rawValue, forKey: "backend")
-            loadContentForBackend()
+            if let activeSessionID,
+               let index = sessions.firstIndex(where: { $0.id == activeSessionID }) {
+                sessions[index].backend = backend
+                persistSessions()
+            }
             reconnect()
         }
     }
@@ -81,9 +102,13 @@ final class AppModel {
     // MARK: Agent backend
     private(set) var client: any AgentClient
     private var eventTask: Task<Void, Never>?
+    private var responseBackgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     // MARK: AI providers
     let providerStore = ProviderStore()
+
+    // MARK: Remote Pi plugin
+    let remotePiStore = RemotePiStore()
 
     // MARK: Demo data
     var fileTree: [FileNode]
@@ -106,26 +131,9 @@ final class AppModel {
     }
 
     private func persistSessions() {
-        guard backend != .mock else { return }
         if let data = try? JSONEncoder().encode(sessions) {
             try? data.write(to: Self.sessionsFileURL, options: .atomic)
         }
-    }
-
-    /// Mock mode shows demo content; real backends restore persisted sessions.
-    private func loadContentForBackend() {
-        if backend == .mock {
-            sessions = MockData.sessions
-            timelineEntries = MockData.timeline
-            stats = MockData.stats
-        } else {
-            sessions = Self.loadSessions()
-            timelineEntries = Self.loadTimeline()
-            stats = ActivityStats(totalSessions: 0, totalTokens: 0, totalCostUSD: 0,
-                                  currentStreakDays: 0, heatmapWeeks: [], perModel: [])
-        }
-        activeSessionID = sessions.first?.id
-        rebuildDerived()
     }
 
     init() {
@@ -136,22 +144,53 @@ final class AppModel {
         hapticsEnabled = defaults.object(forKey: "hapticsEnabled") as? Bool ?? true
         permissionMode = PermissionMode(rawValue: defaults.string(forKey: "permissionMode") ?? "")
             ?? .default
-        let initialBackend = BackendKind(rawValue: defaults.string(forKey: "backend") ?? "") ?? .directAPI
+        let savedBackend = BackendKind(rawValue: defaults.string(forKey: "backend") ?? "") ?? .directAPI
+        let savedProviderID = defaults.string(forKey: "activeProviderID")
+        let directProviderReady = savedProviderID.map {
+            KeychainHelper.get($0) != nil || defaults.data(forKey: "credential.\($0)") != nil
+        } ?? false
+        let savedRemotePiPairing = KeychainHelper.get("remote-pi.peer") != nil
+        // If Direct was left selected without a credential (for example after
+        // a diagnostic launch), do not strand an already-paired Remote Pi user
+        // in the "provider not configured" path.
+        let initialBackend: BackendKind = savedBackend == .directAPI
+            && !directProviderReady
+            && savedRemotePiPairing
+            ? .remotePi
+            : savedBackend
         backend = initialBackend
+        if initialBackend != savedBackend {
+            defaults.set(initialBackend.rawValue, forKey: "backend")
+        }
 
-        sessions = []
-        timelineEntries = []
+        sessions = Self.loadSessions()
+        timelineEntries = Self.loadTimeline()
         stats = ActivityStats(totalSessions: 0, totalTokens: 0, totalCostUSD: 0,
                               currentStreakDays: 0, heatmapWeeks: [], perModel: [])
         fileTree = MockData.fileTree
         client = MockAgentClient()
-        activeSessionID = nil
-        loadContentForBackend()
+        activeSessionID = sessions.first?.id
+        rebuildDerived()
         if let savedID = defaults.string(forKey: "activeSessionID"),
            sessions.contains(where: { $0.id.uuidString == savedID }) {
             activeSessionID = UUID(uuidString: savedID)
         }
         reconnect()
+#if DEBUG
+        let providerID = providerStore.activeProviderID ?? "none"
+        let providerReady = providerStore.activeProvider
+            .map { providerStore.isAuthenticated(provider: $0) } ?? false
+        let openAIKind: String
+        switch providerStore.credential(for: "openai") {
+        case .oauth?: openAIKind = "oauth"
+        case .apiKey?: openAIKind = "api-key"
+        case nil: openAIKind = "none"
+        }
+        let startupLine = "[PiMobile][App] backend=\(backend.shortName) provider=\(providerID) "
+            + "providerConfigured=\(providerReady) openAI=\(openAIKind) "
+            + "remotePiPaired=\(remotePiStore.isPaired)\n"
+        FileHandle.standardError.write(Data(startupLine.utf8))
+#endif
         applyDebugLaunchArguments()
     }
 
@@ -195,17 +234,20 @@ final class AppModel {
 
     func reconnect() {
         eventTask?.cancel()
+        var remoteClientToPrepare: RemotePiAgentClient?
         switch backend {
         case .directAPI:
             client = LLMChatClient(providerStore: providerStore)
-        case .mock:
-            client = MockAgentClient()
         case .webSocket:
             if let url = URL(string: serverURL) {
                 client = WebSocketAgentClient(url: url)
             } else {
                 client = MockAgentClient()
             }
+        case .remotePi:
+            let remoteClient = RemotePiAgentClient(store: remotePiStore)
+            client = remoteClient
+            remoteClientToPrepare = remoteClient
         }
         let events = client.events
         eventTask = Task { [weak self] in
@@ -214,17 +256,36 @@ final class AppModel {
                 self.handle(event)
             }
         }
+        if remotePiStore.isPaired, let remoteClientToPrepare {
+            Task { await remoteClientToPrepare.prepare() }
+        }
     }
 
     // MARK: - Session actions
 
-    func newSession() {
+    func presentNewSession() {
+        newSessionPresented = true
+    }
+
+    func createSession(backend selectedBackend: BackendKind) {
+        let sessionModel: String
+        switch selectedBackend {
+        case .directAPI:
+            sessionModel = providerStore.activeModelID ?? "no model"
+        case .remotePi:
+            sessionModel = remotePiStore.activeModelName ?? "Remote Pi"
+        case .webSocket:
+            sessionModel = "Remote WebSocket"
+        }
         let session = ChatSession(
             title: "New session",
             project: "pi-ios",
-            model: providerStore.activeModelID ?? "claude-sonnet-4")
+            model: sessionModel,
+            backend: selectedBackend)
         sessions.insert(session, at: 0)
         activeSessionID = session.id
+        backend = selectedBackend
+        newSessionPresented = false
         route = .chat
         record(.message, "Session started", detail: session.model, session: session.title)
         persistSessions()
@@ -232,6 +293,7 @@ final class AppModel {
 
     func openSession(_ session: ChatSession) {
         activeSessionID = session.id
+        backend = session.backend ?? .directAPI
         route = .chat
     }
 
@@ -260,7 +322,7 @@ final class AppModel {
     func send(prompt: String) {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        if activeSession == nil { newSession() }
+        if activeSession == nil { createSession(backend: backend) }
         guard let idx = sessions.firstIndex(where: { $0.id == activeSessionID }) else { return }
 
         sessions[idx].messages.append(ChatMessage(role: .user, blocks: [.text(text)]))
@@ -273,9 +335,10 @@ final class AppModel {
         record(.message, "Prompt sent", detail: String(text.prefix(80)), session: sessions[idx].title)
         persistSessions()
 
-        // Conversation history: text of user/assistant messages, skipping the
-        // trailing empty streaming placeholder just appended.
-        let history: [ChatTurn] = sessions[idx].messages.dropLast().compactMap { message in
+        // Conversation history excludes both the current user prompt and the
+        // trailing empty streaming placeholder. LLMChatClient appends the
+        // current prompt when it builds the provider request.
+        let history: [ChatTurn] = sessions[idx].messages.dropLast(2).compactMap { message in
             let text = message.blocks.compactMap { block -> String? in
                 if case .text(let t) = block { return t }
                 return nil
@@ -296,9 +359,19 @@ final class AppModel {
                 return
             }
         }
+        if backend == .remotePi, !remotePiStore.isPaired {
+            let last = sessions[idx].messages.count - 1
+            sessions[idx].messages[last].blocks.append(.text(
+                "⚠️ Remote Pi is not paired. Open **Settings → Remote Pi Plugin** and scan the QR from `/remote-pi pair`."))
+            sessions[idx].messages[last].isStreaming = false
+            sessions[idx].status = .idle
+            persistSessions()
+            return
+        }
 
         let client = self.client
         let permission = permissionMode
+        beginResponseBackgroundTask()
         Task { await client.sendPrompt(text, history: history, permission: permission) }
     }
 
@@ -324,6 +397,7 @@ final class AppModel {
     func abort() {
         let client = self.client
         Task { await client.abort() }
+        endResponseBackgroundTask()
         guard let idx = sessions.firstIndex(where: { $0.id == activeSessionID }) else { return }
         sessions[idx].status = .idle
         if let last = sessions[idx].messages.indices.last, sessions[idx].messages[last].isStreaming {
@@ -368,6 +442,7 @@ final class AppModel {
                 generator.notificationOccurred(.warning)
             }
         case .messageFinished(let usage):
+            endResponseBackgroundTask()
             sessions[sIdx].messages[mIdx].isStreaming = false
             sessions[sIdx].status = .idle
             sessions[sIdx].usage.input += usage.input
@@ -380,12 +455,35 @@ final class AppModel {
             rebuildDerived()
             persistSessions()
         case .failed(let message):
+            endResponseBackgroundTask()
             sessions[sIdx].messages[mIdx].isStreaming = false
             sessions[sIdx].messages[mIdx].blocks.append(.text("⚠️ \(message)"))
             sessions[sIdx].status = .idle
             record(.error, "Chat error", detail: message, session: sessions[sIdx].title)
             persistSessions()
         }
+    }
+
+    // MARK: - Background execution
+
+    /// Gives an in-flight SSE response a short grace period when the user
+    /// switches apps. iOS still controls the deadline; longer work is recovered
+    /// by LLMChatClient when the app becomes active again.
+    private func beginResponseBackgroundTask() {
+        endResponseBackgroundTask()
+        responseBackgroundTask = UIApplication.shared.beginBackgroundTask(
+            withName: "Finish AI response"
+        ) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.endResponseBackgroundTask()
+            }
+        }
+    }
+
+    private func endResponseBackgroundTask() {
+        guard responseBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(responseBackgroundTask)
+        responseBackgroundTask = .invalid
     }
 
     private enum BlockKind { case text, thinking }
@@ -465,9 +563,6 @@ final class AppModel {
         stats.totalSessions = sessions.count
         stats.totalTokens = sessions.reduce(0) { $0 + $1.usage.total }
         stats.totalCostUSD = sessions.reduce(0) { $0 + $1.usage.costUSD }
-        // In Mock mode keep the demo heatmap/streak; otherwise compute from real sessions.
-        guard backend != .mock else { return }
-
         var byModel: [String: Int] = [:]
         for session in sessions {
             byModel[session.model, default: 0] += session.usage.total

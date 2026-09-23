@@ -18,7 +18,8 @@ struct SettingsView: View {
                     }
                 }
                 if let provider = store.activeProvider {
-                    if provider.models.isEmpty {
+                    let availableModels = store.availableModels(for: provider)
+                    if availableModels.isEmpty {
                         TextField("Model ID", text: Binding(
                             get: { store.activeModelID ?? "" },
                             set: { store.activeModelID = $0 }
@@ -28,7 +29,7 @@ struct SettingsView: View {
                         .font(.system(.body, design: .monospaced))
                     } else {
                         Picker("Model", selection: $store.activeModelID) {
-                            ForEach(provider.models) { modelDef in
+                            ForEach(availableModels) { modelDef in
                                 Text(modelDef.name).tag(modelDef.id as String?)
                             }
                         }
@@ -81,7 +82,7 @@ struct SettingsView: View {
                         Text(mode.rawValue).tag(mode)
                     }
                 }
-                Picker("Backend", selection: $model.backend) {
+                Picker("Current backend", selection: $model.backend) {
                     ForEach(BackendKind.allCases) { backend in
                         Text(backend.rawValue).tag(backend)
                     }
@@ -98,6 +99,14 @@ struct SettingsView: View {
             }
             .listRowBackground(theme.surface)
 
+            Section("Remote Pi Plugin") {
+                LabeledContent("Status", value: model.remotePiStore.peer?.sessionName ?? "Not paired")
+                NavigationLink(model.remotePiStore.isPaired ? "Manage pairing" : "Pair with Pi") {
+                    RemotePiSettingsView()
+                }
+            }
+            .listRowBackground(theme.surface)
+
             Section("Behavior") {
                 Toggle("Haptics", isOn: $model.hapticsEnabled)
                     .tint(theme.accent)
@@ -105,7 +114,7 @@ struct SettingsView: View {
             .listRowBackground(theme.surface)
 
             Section("About") {
-                LabeledContent("App", value: "Pi iOS 0.1.0")
+                LabeledContent("App", value: "Pi Mobile 0.1.0")
                 Text("A mobile companion for the Pi coding agent")
                     .font(.caption)
                     .foregroundStyle(theme.textMuted)

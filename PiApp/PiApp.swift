@@ -9,6 +9,14 @@ struct PiApp: App {
             RootView()
                 .environment(model)
                 .preferredColorScheme(model.theme.isDark ? .dark : .light)
+                .task {
+                    // Refresh the account-scoped Codex picker on launch without
+                    // blocking the UI. Cached/bundled models remain available
+                    // when the network is offline.
+                    if case .oauth? = model.providerStore.credential(for: "openai") {
+                        _ = try? await model.providerStore.refreshCodexModels()
+                    }
+                }
         }
     }
 }
