@@ -31,7 +31,7 @@ enum PermissionMode: String, CaseIterable, Codable, Identifiable {
 
 // MARK: - Chat content
 
-enum ToolStatus: Equatable {
+enum ToolStatus: String, Codable {
     case running
     case pendingApproval
     case success
@@ -39,7 +39,7 @@ enum ToolStatus: Equatable {
     case denied
 }
 
-struct ToolCall: Identifiable, Equatable {
+struct ToolCall: Identifiable, Equatable, Codable {
     let id: UUID
     var name: String            // e.g. "Read", "Edit", "Bash", "Glob"
     var summary: String         // e.g. "src/store.ts"
@@ -73,9 +73,41 @@ enum ContentBlock: Identifiable, Equatable {
     }
 }
 
-enum MessageRole { case user, assistant }
+extension ContentBlock: Codable {
+    private enum Kind: String, Codable { case text, thinking, toolCall }
+    private enum CodingKeys: String, CodingKey { case kind, text, toolCall }
 
-struct ChatMessage: Identifiable, Equatable {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .text:
+            self = .text(try container.decode(String.self, forKey: .text))
+        case .thinking:
+            self = .thinking(try container.decode(String.self, forKey: .text))
+        case .toolCall:
+            self = .toolCall(try container.decode(ToolCall.self, forKey: .toolCall))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text(let text):
+            try container.encode(Kind.text, forKey: .kind)
+            try container.encode(text, forKey: .text)
+        case .thinking(let text):
+            try container.encode(Kind.thinking, forKey: .kind)
+            try container.encode(text, forKey: .text)
+        case .toolCall(let call):
+            try container.encode(Kind.toolCall, forKey: .kind)
+            try container.encode(call, forKey: .toolCall)
+        }
+    }
+}
+
+enum MessageRole: String, Codable { case user, assistant }
+
+struct ChatMessage: Identifiable, Equatable, Codable {
     let id: UUID
     var role: MessageRole
     var blocks: [ContentBlock]
@@ -94,13 +126,13 @@ struct ChatMessage: Identifiable, Equatable {
 
 // MARK: - Session
 
-enum SessionStatus: Equatable {
+enum SessionStatus: String, Codable {
     case idle
     case running
     case waitingApproval
 }
 
-struct TokenUsage: Equatable {
+struct TokenUsage: Equatable, Codable {
     var input: Int = 0
     var output: Int = 0
     var costUSD: Double = 0
@@ -108,7 +140,7 @@ struct TokenUsage: Equatable {
     var total: Int { input + output }
 }
 
-struct ChatSession: Identifiable, Equatable {
+struct ChatSession: Identifiable, Equatable, Codable {
     let id: UUID
     var title: String
     var project: String

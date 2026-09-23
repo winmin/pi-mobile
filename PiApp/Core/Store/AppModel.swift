@@ -44,7 +44,9 @@ final class AppModel {
 
     // MARK: Sessions
     var sessions: [ChatSession]
-    var activeSessionID: UUID?
+    var activeSessionID: UUID? {
+        didSet { UserDefaults.standard.set(activeSessionID?.uuidString, forKey: "activeSessionID") }
+    }
     var permissionMode: PermissionMode {
         didSet { UserDefaults.standard.set(permissionMode.rawValue, forKey: "permissionMode") }
     }
@@ -63,6 +65,7 @@ final class AppModel {
     var backend: BackendKind {
         didSet {
             UserDefaults.standard.set(backend.rawValue, forKey: "backend")
+            loadContentForBackend()
             reconnect()
         }
     }
@@ -87,6 +90,44 @@ final class AppModel {
     var timelineEntries: [TimelineEntry]
     var stats: ActivityStats
 
+    // MARK: - Persistence
+
+    private static var sessionsFileURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PiApp", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("sessions.json")
+    }
+
+    private static func loadSessions() -> [ChatSession] {
+        guard let data = try? Data(contentsOf: sessionsFileURL),
+              let sessions = try? JSONDecoder().decode([ChatSession].self, from: data) else { return [] }
+        return sessions
+    }
+
+    private func persistSessions() {
+        guard backend != .mock else { return }
+        if let data = try? JSONEncoder().encode(sessions) {
+            try? data.write(to: Self.sessionsFileURL, options: .atomic)
+        }
+    }
+
+    /// Mock mode shows demo content; real backends restore persisted sessions.
+    private func loadContentForBackend() {
+        if backend == .mock {
+            sessions = MockData.sessions
+            timelineEntries = MockData.timeline
+            stats = MockData.stats
+        } else {
+            sessions = Self.loadSessions()
+            timelineEntries = Self.loadTimeline()
+            stats = ActivityStats(totalSessions: 0, totalTokens: 0, totalCostUSD: 0,
+                                  currentStreakDays: 0, heatmapWeeks: [], perModel: [])
+        }
+        activeSessionID = sessions.first?.id
+        rebuildDerived()
+    }
+
     init() {
         let defaults = UserDefaults.standard
         themeID = defaults.string(forKey: "themeID") ?? PiTheme.default.id
@@ -98,22 +139,19 @@ final class AppModel {
         let initialBackend = BackendKind(rawValue: defaults.string(forKey: "backend") ?? "") ?? .directAPI
         backend = initialBackend
 
-        // Demo content only in Mock mode; real backends start from a clean slate.
-        if initialBackend == .mock {
-            sessions = MockData.sessions
-            timelineEntries = MockData.timeline
-            stats = MockData.stats
-        } else {
-            sessions = []
-            timelineEntries = Self.loadTimeline()
-            stats = ActivityStats(totalSessions: 0, totalTokens: 0, totalCostUSD: 0,
-                                  currentStreakDays: 0, heatmapWeeks: [], perModel: [])
-        }
+        sessions = []
+        timelineEntries = []
+        stats = ActivityStats(totalSessions: 0, totalTokens: 0, totalCostUSD: 0,
+                              currentStreakDays: 0, heatmapWeeks: [], perModel: [])
         fileTree = MockData.fileTree
         client = MockAgentClient()
-        activeSessionID = sessions.first?.id
+        activeSessionID = nil
+        loadContentForBackend()
+        if let savedID = defaults.string(forKey: "activeSessionID"),
+           sessions.contains(where: { $0.id.uuidString == savedID }) {
+            activeSessionID = UUID(uuidString: savedID)
+        }
         reconnect()
-        rebuildDerived()
         applyDebugLaunchArguments()
     }
 
@@ -189,6 +227,7 @@ final class AppModel {
         activeSessionID = session.id
         route = .chat
         record(.message, "Session started", detail: session.model, session: session.title)
+        persistSessions()
     }
 
     func openSession(_ session: ChatSession) {
@@ -201,16 +240,19 @@ final class AppModel {
         if activeSessionID == session.id {
             activeSessionID = sessions.first?.id
         }
+        persistSessions()
     }
 
     func toggleArchive(_ session: ChatSession) {
         guard let idx = sessions.firstIndex(where: { $0.id == session.id }) else { return }
         sessions[idx].isArchived.toggle()
+        persistSessions()
     }
 
     func renameSession(_ session: ChatSession, to title: String) {
         guard let idx = sessions.firstIndex(where: { $0.id == session.id }), !title.isEmpty else { return }
         sessions[idx].title = title
+        persistSessions()
     }
 
     // MARK: - Chat actions
@@ -229,6 +271,7 @@ final class AppModel {
             sessions[idx].title = String(text.prefix(40))
         }
         record(.message, "Prompt sent", detail: String(text.prefix(80)), session: sessions[idx].title)
+        persistSessions()
 
         // Conversation history: text of user/assistant messages, skipping the
         // trailing empty streaming placeholder just appended.
@@ -264,6 +307,7 @@ final class AppModel {
         sessions[idx].status = .running
         setPendingToolCallStatus(in: idx, .running)
         record(.approval, "Tool call approved", session: sessions[idx].title)
+        persistSessions()
         let client = self.client
         Task { await client.answerPermission(allow: true) }
     }
@@ -272,6 +316,7 @@ final class AppModel {
         guard let idx = sessions.firstIndex(where: { $0.id == activeSessionID }) else { return }
         sessions[idx].status = .running
         record(.approval, "Tool call denied", session: sessions[idx].title)
+        persistSessions()
         let client = self.client
         Task { await client.answerPermission(allow: false) }
     }
@@ -284,6 +329,7 @@ final class AppModel {
         if let last = sessions[idx].messages.indices.last, sessions[idx].messages[last].isStreaming {
             sessions[idx].messages[last].isStreaming = false
         }
+        persistSessions()
     }
 
     // MARK: - Event handling
@@ -311,9 +357,11 @@ final class AppModel {
                 record(.toolCall, "\(call.name) \(verb)", detail: call.summary,
                        session: sessions[sIdx].title)
             }
+            persistSessions()
         case .permissionRequested(let id):
             updateToolCall(in: sIdx, message: mIdx, id: id) { $0.status = .pendingApproval }
             sessions[sIdx].status = .waitingApproval
+            persistSessions()
             if hapticsEnabled {
                 // Light haptic nudge for approval requests.
                 let generator = UINotificationFeedbackGenerator()
@@ -330,11 +378,13 @@ final class AppModel {
                    detail: "\(formatTokenCount(usage.total)) tokens",
                    session: sessions[sIdx].title)
             rebuildDerived()
+            persistSessions()
         case .failed(let message):
             sessions[sIdx].messages[mIdx].isStreaming = false
             sessions[sIdx].messages[mIdx].blocks.append(.text("⚠️ \(message)"))
             sessions[sIdx].status = .idle
             record(.error, "Chat error", detail: message, session: sessions[sIdx].title)
+            persistSessions()
         }
     }
 

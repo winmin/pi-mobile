@@ -13,6 +13,7 @@ Chat directly against your own LLM providers with streaming, manage sessions, tr
   - **ChatGPT (OpenAI Codex)** — device code flow (login only; chat adapter not yet implemented)
   - Credentials stored in the iOS Keychain, tokens auto-refresh before expiry
 - **Sessions** — grouped by project, rename / archive / delete, per-session token usage
+- **Session persistence** — conversations are saved locally (JSON in Application Support) and survive app restarts; active session is restored
 - **Timeline** — a real activity log of your prompts, responses, tool calls and approvals (persisted locally)
 - **Home dashboard** — sessions / tokens / cost stats, activity heatmap, per-model usage — all computed from your actual usage
 - **Themes** — Dark / Light / Nord / Gruvbox / Breeze Light, using pi-desktop's seed-color token system
