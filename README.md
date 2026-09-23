@@ -1,8 +1,14 @@
 # Pi Mobile
 
+[![iOS CI](https://github.com/winmin/pi-mobile/actions/workflows/ci.yml/badge.svg)](https://github.com/winmin/pi-mobile/actions/workflows/ci.yml)
+
 A mobile companion for the [Pi coding agent](https://pi.dev) — a native SwiftUI port of [pi-desktop](../pi-desktop)'s chat experience for iPhone and iPad.
 
 Chat directly against your own LLM providers with streaming, manage sessions, track real activity, and switch themes. No backend required — the app talks to model APIs over HTTPS.
+
+<p align="center">
+  <img src="docs/images/home.png" alt="Pi Mobile Home dashboard" width="390">
+</p>
 
 ## Features
 
@@ -42,7 +48,8 @@ For a physical device: select your team in **Signing & Capabilities**, or pass
 
 ### Unsigned iOS build
 
-GitHub Releases provides an unsigned device `.ipa` for convenience. It is built
+GitHub Actions builds an unsigned device `.ipa` on every push and pull request;
+version tags also publish that CI-built artifact to GitHub Releases. It is built
 for arm64 devices running iOS 17 or newer and does not contain a provisioning
 profile. Download it from the Releases page, sign it with your own Apple
 Developer identity/profile, and then install the re-signed build on your device.

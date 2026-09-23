@@ -60,6 +60,8 @@ struct HomeView: View {
             Label(title, systemImage: icon)
                 .font(.caption2)
                 .foregroundStyle(theme.textMuted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
             Text(value)
                 .font(.headline)
                 .foregroundStyle(theme.textPrimary)

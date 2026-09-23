@@ -1,0 +1,162 @@
+name: iOS CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build unsigned iOS app
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      ipa_name: ${{ steps.metadata.outputs.ipa_name }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcodebuild -project PiApp.xcodeproj -scheme PiApp -showBuildSettings \
+            | grep -E 'MARKETING_VERSION|CURRENT_PROJECT_VERSION|IPHONEOS_DEPLOYMENT_TARGET'
+
+      - name: Read build metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          settings="$(xcodebuild -project PiApp.xcodeproj -scheme PiApp -configuration Release -showBuildSettings)"
+          version="$(awk -F ' = ' '/MARKETING_VERSION/ { print $2; exit }' <<< "$settings")"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "ipa_name=PiMobile-v${version}-unsigned.ipa" >> "$GITHUB_OUTPUT"
+
+      - name: Compile simulator build
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          mkdir -p build/logs
+          xcodebuild \
+            -project PiApp.xcodeproj \
+            -scheme PiApp \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/simulator \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build/logs/simulator.log
+
+      - name: Compile unsigned device build
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          xcodebuild \
+            -project PiApp.xcodeproj \
+            -scheme PiApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/device \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build | tee build/logs/device.log
+
+      - name: Package unsigned IPA
+        id: package
+        shell: bash
+        env:
+          IPA_NAME: ${{ steps.metadata.outputs.ipa_name }}
+        run: |
+          set -euo pipefail
+          app='build/device/Build/Products/Release-iphoneos/PiApp.app'
+          test -d "$app"
+
+          if codesign -dv "$app" >/dev/null 2>&1; then
+            echo 'Expected an unsigned app, but a signature was found.' >&2
+            exit 1
+          fi
+          test ! -f "$app/embedded.mobileprovision"
+
+          mkdir -p build/package/Payload build/artifacts
+          ditto "$app" build/package/Payload/PiApp.app
+          (
+            cd build/package
+            /usr/bin/zip -qry "../artifacts/$IPA_NAME" Payload
+          )
+          (
+            cd build/artifacts
+            shasum -a 256 "$IPA_NAME" > SHA256SUMS.txt
+          )
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: PiMobile-${{ github.sha }}
+          path: |
+            build/artifacts/${{ steps.metadata.outputs.ipa_name }}
+            build/artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-logs-${{ github.sha }}
+          path: build/logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release:
+    name: Publish tagged build
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download CI artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: PiMobile-${{ github.sha }}
+          path: dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          IPA_NAME: ${{ needs.build.outputs.ipa_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Pi Mobile $VERSION" \
+              --generate-notes
+          fi
+          gh release upload "$TAG" \
+            "dist/$IPA_NAME#Pi Mobile $VERSION unsigned IPA" \
+            "dist/SHA256SUMS.txt#SHA-256 checksum" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
