@@ -97,6 +97,9 @@ struct SettingsView: View {
                     Button("Reconnect") {
                         model.reconnect()
                     }
+                    Text("Run `node bridge/pi-bridge.mjs --binary omp` on your computer, then enter its LAN address (e.g. ws://192.168.1.5:7777). Both devices must be on the same network.")
+                        .font(.caption2)
+                        .foregroundStyle(theme.textMuted)
                 }
             }
             .listRowBackground(theme.surface)

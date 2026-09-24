@@ -63,12 +63,27 @@ Developer identity/profile, and then install the re-signed build on your device.
 
 If you chat before configuring a provider, the assistant will point you to Settings.
 
+## Connect over LAN (pi-bridge)
+
+For direct device-to-computer chat without any relay, run the bundled
+zero-dependency bridge (see [bridge/README.md](bridge/README.md)):
+
+```bash
+node bridge/pi-bridge.mjs --binary omp    # or `pi`
+```
+
+Then in the app: **Settings → Agent → Backend → Remote (WebSocket)**, enter the
+printed LAN URL (e.g. `ws://192.168.1.5:7777`), tap **Reconnect**. Both devices
+must be on the same network. Streaming, tool-call rendering, permission
+approvals and token usage all work over the bridge.
+
 ## Connect the Remote Pi plugin
 
-The existing **Remote (WebSocket)** backend remains available. The Remote Pi
-plugin is a separate backend with its own pairing flow. This integration and
-the app icon use the official [`remote-pi` package](https://pi.dev/packages/remote-pi)
-and its published brand assets.
+The **Remote (WebSocket)** backend above is the LAN-direct path. The Remote Pi
+plugin is a separate backend with its own pairing flow (works across networks
+via a relay). This integration and the app icon use the official
+[`remote-pi` package](https://pi.dev/packages/remote-pi) and its published
+brand assets.
 
 1. On the computer running Pi, install the extension: `pi install npm:remote-pi`
 2. In Pi run `/remote-pi`, then `/remote-pi pair`

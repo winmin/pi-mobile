@@ -27,6 +27,9 @@ struct ChatView: View {
         // keyboard safe area is animating, especially for a brand-new chat.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
+                if model.activeSession?.status == .waitingApproval {
+                    approvalBanner(theme)
+                }
                 Rectangle().fill(theme.border).frame(height: 0.5)
                 ChatInputBar()
             }
@@ -34,6 +37,30 @@ struct ChatView: View {
         }
         .navigationTitle(model.activeSession?.title ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// Fallback approval UI — shown whenever the session waits for a decision,
+    /// even if the pending tool card can't be located in the message list.
+    private func approvalBanner(_ theme: PiTheme) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "hand.raised.fill")
+                .foregroundStyle(theme.warning)
+            Text("Pi is waiting for approval")
+                .font(.callout)
+                .foregroundStyle(theme.textPrimary)
+            Spacer()
+            Button("Approve") { model.approveToolCall() }
+                .buttonStyle(.borderedProminent)
+                .tint(theme.success)
+                .controlSize(.small)
+            Button("Deny") { model.denyToolCall() }
+                .buttonStyle(.bordered)
+                .tint(theme.error)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(theme.surface)
     }
 
     // MARK: - Messages
