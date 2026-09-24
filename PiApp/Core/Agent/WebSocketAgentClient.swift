@@ -92,6 +92,9 @@ final class WebSocketAgentClient: AgentClient {
             if let t = obj["text"] as? String { continuation.yield(.thinkingDelta(t)) }
         case "tool_started":
             let remoteID = (obj["id"] as? String) ?? UUID().uuidString
+            // toolcall_start and tool_execution_start can both announce the same
+            // remote call — only create a card for the first announcement.
+            if pendingCalls[remoteID] != nil { break }
             let localID = UUID()
             pendingCalls[remoteID] = localID
             let call = ToolCall(
@@ -112,7 +115,11 @@ final class WebSocketAgentClient: AgentClient {
                 pendingCalls.removeValue(forKey: rid)
             }
         case "permission_requested":
-            if let rid = obj["id"] as? String, let local = pendingCalls[rid] {
+            if let rid = obj["id"] as? String {
+                // The permission gate can fire before tool_started — register the
+                // id instead of dropping the request or the turn would deadlock.
+                let local = pendingCalls[rid] ?? UUID()
+                pendingCalls[rid] = local
                 continuation.yield(.permissionRequested(id: local))
             }
         case "message_finished":

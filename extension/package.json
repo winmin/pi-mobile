@@ -1,0 +1,25 @@
+{
+  "name": "pi-lan-bridge",
+  "version": "0.1.0",
+  "description": "LAN-direct WebSocket bridge: drive this pi/omp agent from the Pi iOS app on the same network",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "lan",
+    "websocket",
+    "mobile"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "Apache-2.0"
+}

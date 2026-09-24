@@ -9,6 +9,9 @@ xcuserdata/
 # macOS
 .DS_Store
 
+# Node
+node_modules/
+
 # Swift Package Manager
 .build/
 .swiftpm/

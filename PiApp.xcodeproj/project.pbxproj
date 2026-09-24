@@ -7,8 +7,18 @@
 	objects = {
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		2E1000000000000000000001 /* PiApp */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = PiApp; sourceTree = "<group>"; };
+		2E1000000000000000000001 /* PiApp */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (2E1000000000000000000010 /* Info.plist exception */,); explicitFileTypes = {}; explicitFolders = (); path = PiApp; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		2E1000000000000000000010 /* Info.plist exception */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 2E1000000000000000000006 /* PiApp */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		2E1000000000000000000002 /* Frameworks */ = {
@@ -244,6 +254,7 @@
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PiApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Pi Mobile";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a Remote Pi pairing QR code.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -276,6 +287,7 @@
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PiApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Pi Mobile";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a Remote Pi pairing QR code.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
