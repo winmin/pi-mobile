@@ -7,6 +7,8 @@ struct SettingsView: View {
         @Bindable var model = model
         @Bindable var store = model.providerStore
         let theme = model.theme
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
         Form {
             Section("AI Providers") {
                 Picker("Provider", selection: Binding<String?>(
@@ -100,8 +102,16 @@ struct SettingsView: View {
             .listRowBackground(theme.surface)
 
             Section("Remote Pi Plugin") {
-                LabeledContent("Status", value: model.remotePiStore.peer?.sessionName ?? "Not paired")
-                NavigationLink(model.remotePiStore.isPaired ? "Manage pairing" : "Pair with Pi") {
+                LabeledContent(
+                    "Status",
+                    value: model.remotePiStore.isPaired
+                        ? "\(model.remotePiStore.peers.count) paired"
+                        : "Not paired"
+                )
+                if let peer = model.remotePiStore.selectedPeer {
+                    LabeledContent("Default Pi", value: peer.sessionName)
+                }
+                NavigationLink(model.remotePiStore.isPaired ? "Manage paired Pi" : "Pair with Pi") {
                     RemotePiSettingsView()
                 }
             }
@@ -114,7 +124,7 @@ struct SettingsView: View {
             .listRowBackground(theme.surface)
 
             Section("About") {
-                LabeledContent("App", value: "Pi Mobile 0.1.0")
+                LabeledContent("App", value: "Pi Mobile \(version) (\(build))")
                 Text("A mobile companion for the Pi coding agent")
                     .font(.caption)
                     .foregroundStyle(theme.textMuted)

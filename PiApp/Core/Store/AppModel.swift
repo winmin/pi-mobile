@@ -85,6 +85,11 @@ final class AppModel {
             if let activeSessionID,
                let index = sessions.firstIndex(where: { $0.id == activeSessionID }) {
                 sessions[index].backend = backend
+                if backend == .remotePi {
+                    let peerID = sessions[index].remotePiPeerID ?? remotePiStore.selectedPeerID
+                    sessions[index].remotePiPeerID = peerID
+                    if let peerID { remotePiStore.selectPeer(id: peerID) }
+                }
                 persistSessions()
             }
             reconnect()
@@ -103,6 +108,7 @@ final class AppModel {
     private(set) var client: any AgentClient
     private var eventTask: Task<Void, Never>?
     private var responseBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var wasAppBackgrounded = false
 
     // MARK: AI providers
     let providerStore = ProviderStore()
@@ -136,6 +142,17 @@ final class AppModel {
         }
     }
 
+    private func migrateLegacyRemotePiSessions() {
+        guard let defaultPeerID = remotePiStore.selectedPeerID else { return }
+        var changed = false
+        for index in sessions.indices
+        where sessions[index].backend == .remotePi && sessions[index].remotePiPeerID == nil {
+            sessions[index].remotePiPeerID = defaultPeerID
+            changed = true
+        }
+        if changed { persistSessions() }
+    }
+
     init() {
         let defaults = UserDefaults.standard
         themeID = defaults.string(forKey: "themeID") ?? PiTheme.default.id
@@ -149,7 +166,7 @@ final class AppModel {
         let directProviderReady = savedProviderID.map {
             KeychainHelper.get($0) != nil || defaults.data(forKey: "credential.\($0)") != nil
         } ?? false
-        let savedRemotePiPairing = KeychainHelper.get("remote-pi.peer") != nil
+        let savedRemotePiPairing = remotePiStore.isPaired
         // If Direct was left selected without a credential (for example after
         // a diagnostic launch), do not strand an already-paired Remote Pi user
         // in the "provider not configured" path.
@@ -175,6 +192,7 @@ final class AppModel {
            sessions.contains(where: { $0.id.uuidString == savedID }) {
             activeSessionID = UUID(uuidString: savedID)
         }
+        migrateLegacyRemotePiSessions()
         reconnect()
 #if DEBUG
         let providerID = providerStore.activeProviderID ?? "none"
@@ -234,6 +252,7 @@ final class AppModel {
 
     func reconnect() {
         eventTask?.cancel()
+        let previousRemoteClient = client as? RemotePiAgentClient
         var remoteClientToPrepare: RemotePiAgentClient?
         switch backend {
         case .directAPI:
@@ -245,9 +264,19 @@ final class AppModel {
                 client = MockAgentClient()
             }
         case .remotePi:
-            let remoteClient = RemotePiAgentClient(store: remotePiStore)
+            let peerID = activeSession?.remotePiPeerID
+                ?? remotePiStore.selectedPeerID
+                ?? ""
+            let remoteClient = RemotePiAgentClient(
+                store: remotePiStore,
+                peerID: peerID,
+                predecessor: previousRemoteClient
+            )
             client = remoteClient
             remoteClientToPrepare = remoteClient
+        }
+        if backend != .remotePi, let previousRemoteClient {
+            Task { await previousRemoteClient.shutdown() }
         }
         let events = client.events
         eventTask = Task { [weak self] in
@@ -256,9 +285,22 @@ final class AppModel {
                 self.handle(event)
             }
         }
-        if remotePiStore.isPaired, let remoteClientToPrepare {
+        let activePeerID = activeSession?.remotePiPeerID ?? remotePiStore.selectedPeerID
+        if remotePiStore.peer(id: activePeerID) != nil, let remoteClientToPrepare {
             Task { await remoteClientToPrepare.prepare() }
         }
+    }
+
+    func applicationDidEnterBackground() {
+        wasAppBackgrounded = true
+    }
+
+    func applicationDidBecomeActive() {
+        guard wasAppBackgrounded else { return }
+        wasAppBackgrounded = false
+        guard backend == .remotePi,
+              let remoteClient = client as? RemotePiAgentClient else { return }
+        Task { await remoteClient.reconnectAfterForeground() }
     }
 
     // MARK: - Session actions
@@ -267,13 +309,21 @@ final class AppModel {
         newSessionPresented = true
     }
 
-    func createSession(backend selectedBackend: BackendKind) {
+    func createSession(backend selectedBackend: BackendKind, remotePiPeerID: String? = nil) {
+        let selectedRemotePeerID = selectedBackend == .remotePi
+            ? (remotePiPeerID ?? remotePiStore.selectedPeerID)
+            : nil
+        if let selectedRemotePeerID {
+            remotePiStore.selectPeer(id: selectedRemotePeerID)
+        }
         let sessionModel: String
         switch selectedBackend {
         case .directAPI:
             sessionModel = providerStore.activeModelID ?? "no model"
         case .remotePi:
-            sessionModel = remotePiStore.activeModelName ?? "Remote Pi"
+            sessionModel = remotePiStore.activeModelName(for: selectedRemotePeerID)
+                ?? remotePiStore.peer(id: selectedRemotePeerID)?.sessionName
+                ?? "Remote Pi"
         case .webSocket:
             sessionModel = "Remote WebSocket"
         }
@@ -281,7 +331,8 @@ final class AppModel {
             title: "New session",
             project: "pi-ios",
             model: sessionModel,
-            backend: selectedBackend)
+            backend: selectedBackend,
+            remotePiPeerID: selectedRemotePeerID)
         sessions.insert(session, at: 0)
         activeSessionID = session.id
         backend = selectedBackend
@@ -293,8 +344,47 @@ final class AppModel {
 
     func openSession(_ session: ChatSession) {
         activeSessionID = session.id
+        if session.backend == .remotePi,
+           let peerID = session.remotePiPeerID,
+           remotePiStore.peer(id: peerID) != nil {
+            remotePiStore.selectPeer(id: peerID)
+        }
         backend = session.backend ?? .directAPI
         route = .chat
+    }
+
+    func setDefaultRemotePiPeer(_ peerID: String) {
+        remotePiStore.selectPeer(id: peerID)
+    }
+
+    func assignRemotePiPeer(_ peerID: String, to sessionID: UUID) {
+        guard let peer = remotePiStore.peer(id: peerID),
+              let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        sessions[index].backend = .remotePi
+        sessions[index].remotePiPeerID = peerID
+        sessions[index].model = remotePiStore.activeModelName(for: peerID) ?? peer.sessionName
+        persistSessions()
+
+        guard activeSessionID == sessionID else { return }
+        remotePiStore.selectPeer(id: peerID)
+        backend = .remotePi
+    }
+
+    func useRemotePiPeerForActiveSession(_ peerID: String) {
+        if let activeSessionID {
+            assignRemotePiPeer(peerID, to: activeSessionID)
+        } else {
+            remotePiStore.selectPeer(id: peerID)
+            backend = .remotePi
+        }
+    }
+
+    func forgetRemotePiPeer(_ peerID: String) {
+        remotePiStore.forgetPairing(id: peerID)
+        if activeSession?.backend == .remotePi,
+           activeSession?.remotePiPeerID == peerID {
+            reconnect()
+        }
     }
 
     func deleteSession(_ session: ChatSession) {
@@ -359,14 +449,17 @@ final class AppModel {
                 return
             }
         }
-        if backend == .remotePi, !remotePiStore.isPaired {
-            let last = sessions[idx].messages.count - 1
-            sessions[idx].messages[last].blocks.append(.text(
-                "⚠️ Remote Pi is not paired. Open **Settings → Remote Pi Plugin** and scan the QR from `/remote-pi pair`."))
-            sessions[idx].messages[last].isStreaming = false
-            sessions[idx].status = .idle
-            persistSessions()
-            return
+        if backend == .remotePi {
+            let peerID = sessions[idx].remotePiPeerID ?? remotePiStore.selectedPeerID
+            guard remotePiStore.peer(id: peerID) != nil else {
+                let last = sessions[idx].messages.count - 1
+                sessions[idx].messages[last].blocks.append(.text(
+                    "⚠️ This session's Remote Pi is unavailable. Select a paired Pi in **Settings → Remote Pi Plugin**, or create a new session."))
+                sessions[idx].messages[last].isStreaming = false
+                sessions[idx].status = .idle
+                persistSessions()
+                return
+            }
         }
 
         let client = self.client

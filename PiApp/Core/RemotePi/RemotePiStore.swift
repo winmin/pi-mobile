@@ -3,12 +3,17 @@ import Foundation
 import Observation
 import UIKit
 
-struct RemotePiPeer: Codable, Equatable {
+struct RemotePiPeer: Codable, Equatable, Identifiable {
     var remotePublicKey: String
     var sessionName: String
     var relayURL: String
     var roomID: String
     var pairedAt: Date
+
+    /// A Remote Pi relay identity can publish several rooms. Treat each
+    /// identity/room pair as a selectable destination while still sharing one
+    /// owner key for this iPhone.
+    var id: String { "\(remotePublicKey)|\(roomID)" }
 }
 
 struct RemotePiConfiguration {
@@ -89,26 +94,65 @@ final class RemotePiStore {
     var relayURL: String {
         didSet { UserDefaults.standard.set(relayURL, forKey: "remotePi.relayURL") }
     }
-    private(set) var peer: RemotePiPeer?
+    private(set) var peers: [RemotePiPeer]
+    private(set) var selectedPeerID: String? {
+        didSet { UserDefaults.standard.set(selectedPeerID, forKey: "remotePi.selectedPeerID") }
+    }
     private(set) var isPairing = false
-    private(set) var activeModelName: String?
+    private(set) var activeModelNames: [String: String] = [:]
 
-    var isPaired: Bool { peer != nil }
+    var isPaired: Bool { !peers.isEmpty }
+    var selectedPeer: RemotePiPeer? {
+        guard let selectedPeerID else { return peers.first }
+        return peers.first { $0.id == selectedPeerID } ?? peers.first
+    }
+    var activeModelName: String? {
+        guard let id = selectedPeer?.id else { return nil }
+        return activeModelNames[id]
+    }
 
-    private let peerKey = "remote-pi.peer"
+    private let peersKey = "remote-pi.peers"
+    private let legacyPeerKey = "remote-pi.peer"
     private let identityKey = "remote-pi.owner-private-key"
 
     init() {
         relayURL = UserDefaults.standard.string(forKey: "remotePi.relayURL")
             ?? Self.defaultRelayURL
-        if let json = KeychainHelper.get(peerKey),
-           let data = json.data(using: .utf8) {
-            peer = try? JSONDecoder().decode(RemotePiPeer.self, from: data)
+        var loadedPeers: [RemotePiPeer] = []
+        if let json = KeychainHelper.get(peersKey),
+           let data = json.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([RemotePiPeer].self, from: data) {
+            loadedPeers = decoded
+        } else if let json = KeychainHelper.get(legacyPeerKey),
+                  let data = json.data(using: .utf8),
+                  let legacy = try? JSONDecoder().decode(RemotePiPeer.self, from: data) {
+            loadedPeers = [legacy]
+            if let encoded = try? JSONEncoder().encode(loadedPeers),
+               let value = String(data: encoded, encoding: .utf8),
+               KeychainHelper.set(value, for: peersKey) == errSecSuccess {
+                KeychainHelper.delete(legacyPeerKey)
+            }
         }
+        peers = loadedPeers
+
+        let savedID = UserDefaults.standard.string(forKey: "remotePi.selectedPeerID")
+        selectedPeerID = loadedPeers.contains(where: { $0.id == savedID })
+            ? savedID
+            : loadedPeers.first?.id
     }
 
-    func configuration() throws -> RemotePiConfiguration {
-        guard let peer else { throw RemotePiError.notPaired }
+    func peer(id: String?) -> RemotePiPeer? {
+        guard let id else { return selectedPeer }
+        return peers.first { $0.id == id }
+    }
+
+    func selectPeer(id: String) {
+        guard peers.contains(where: { $0.id == id }) else { return }
+        selectedPeerID = id
+    }
+
+    func configuration(for peerID: String? = nil) throws -> RemotePiConfiguration {
+        guard let peer = peer(id: peerID) else { throw RemotePiError.notPaired }
         return RemotePiConfiguration(peer: peer, privateKey: try loadOrCreatePrivateKey())
     }
 
@@ -173,6 +217,7 @@ final class RemotePiStore {
                         pairedAt: Date()
                     )
                     try save(peer: confirmed)
+                    selectedPeerID = confirmed.id
                     relayURL = effectiveRelay
                     await connection.close()
                     return confirmed
@@ -191,27 +236,52 @@ final class RemotePiStore {
         }
     }
 
-    func forgetPairing() {
-        peer = nil
-        activeModelName = nil
-        KeychainHelper.delete(peerKey)
-        // This build supports one Remote Pi peer. Rotate the owner identity
-        // too, otherwise the Pi still sees the next pairing attempt as the
-        // already-paired owner and intentionally ignores pair_request.
-        KeychainHelper.delete(identityKey)
+    func forgetPairing(id: String) {
+        guard peers.contains(where: { $0.id == id }) else { return }
+        let remainingPeers = peers.filter { $0.id != id }
+        guard (try? persistPeers(remainingPeers)) != nil else { return }
+
+        peers = remainingPeers
+        activeModelNames.removeValue(forKey: id)
+        if selectedPeerID == id {
+            selectedPeerID = peers.first?.id
+        }
+
+        // All stored peers share this device identity. Rotating it while even
+        // one peer remains would invalidate every other pairing.
+        if peers.isEmpty {
+            KeychainHelper.delete(identityKey)
+        }
     }
 
-    func updateActiveModel(_ name: String) {
-        activeModelName = name
+    func activeModelName(for peerID: String?) -> String? {
+        guard let peer = peer(id: peerID) else { return nil }
+        return activeModelNames[peer.id]
+    }
+
+    func updateActiveModel(_ name: String, for peerID: String) {
+        guard peers.contains(where: { $0.id == peerID }) else { return }
+        activeModelNames[peerID] = name
     }
 
     private func save(peer: RemotePiPeer) throws {
-        let data = try JSONEncoder().encode(peer)
-        guard let json = String(data: data, encoding: .utf8),
-              KeychainHelper.set(json, for: peerKey) == errSecSuccess else {
-            throw RemotePiError.remote("Could not save the Remote Pi pairing in Keychain.")
+        var updatedPeers = peers
+        if let index = updatedPeers.firstIndex(where: { $0.id == peer.id }) {
+            updatedPeers[index] = peer
+        } else {
+            updatedPeers.append(peer)
+            updatedPeers.sort { $0.pairedAt > $1.pairedAt }
         }
-        self.peer = peer
+        try persistPeers(updatedPeers)
+        peers = updatedPeers
+    }
+
+    private func persistPeers(_ peers: [RemotePiPeer]) throws {
+        let data = try JSONEncoder().encode(peers)
+        guard let json = String(data: data, encoding: .utf8),
+              KeychainHelper.set(json, for: peersKey) == errSecSuccess else {
+            throw RemotePiError.remote("Could not save the Remote Pi pairings in Keychain.")
+        }
     }
 
     private func loadOrCreatePrivateKey() throws -> Data {

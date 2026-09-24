@@ -124,7 +124,13 @@ struct ChatInputBar: View {
         case .directAPI:
             return "Direct · \(model.providerStore.activeModelID ?? "no model")"
         case .remotePi:
-            return "Remote Pi · \(model.remotePiStore.activeModelName ?? "detecting model…")"
+            let peerID = session?.remotePiPeerID ?? model.remotePiStore.selectedPeerID
+            guard let peer = model.remotePiStore.peer(id: peerID) else {
+                return "Remote Pi · unavailable"
+            }
+            let remoteModel = model.remotePiStore.activeModelName(for: peer.id)
+                ?? "detecting model…"
+            return "Remote Pi · \(peer.sessionName) · \(remoteModel)"
         case .webSocket:
             return "Remote WebSocket"
         }

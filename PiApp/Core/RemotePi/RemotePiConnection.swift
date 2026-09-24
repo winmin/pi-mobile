@@ -36,6 +36,11 @@ actor RemotePiConnection {
         }
         let key = try Curve25519.Signing.PrivateKey(rawRepresentation: configuration.privateKey)
         let task = URLSession.shared.webSocketTask(with: url)
+#if DEBUG
+        FileHandle.standardError.write(Data(
+            "[PiMobile][RemotePi] connecting host=\(url.host ?? "unknown") room=\(configuration.peer.roomID)\n".utf8
+        ))
+#endif
         socket = task
         task.resume()
 
@@ -68,7 +73,18 @@ actor RemotePiConnection {
                 "peers": [configuration.peer.remotePublicKey],
             ])
             startHeartbeat()
+#if DEBUG
+            FileHandle.standardError.write(Data(
+                "[PiMobile][RemotePi] authenticated room=\(configuration.peer.roomID)\n".utf8
+            ))
+#endif
         } catch {
+#if DEBUG
+            let nsError = error as NSError
+            FileHandle.standardError.write(Data(
+                "[PiMobile][RemotePi] handshake failed \(nsError.domain)(\(nsError.code)): \(nsError.localizedDescription)\n".utf8
+            ))
+#endif
             task.cancel(with: .goingAway, reason: nil)
             socket = nil
             throw error
@@ -77,6 +93,12 @@ actor RemotePiConnection {
 
     func sendInner(_ inner: [String: Any]) async throws {
         guard socket != nil else { throw RemotePiError.connectionClosed }
+#if DEBUG
+        let innerType = (inner["type"] as? String) ?? "unknown"
+        FileHandle.standardError.write(Data(
+            "[PiMobile][RemotePi] send inner=\(innerType) room=\(configuration.peer.roomID)\n".utf8
+        ))
+#endif
         let innerData = try JSONSerialization.data(withJSONObject: inner)
         try await sendFrame([
             "peer": configuration.peer.remotePublicKey,
@@ -98,6 +120,13 @@ actor RemotePiConnection {
         while socket != nil {
             let frame = try await receiveFrame()
             if let type = frame["type"] as? String {
+#if DEBUG
+                let code = (frame["code"] as? String).map { " code=\($0)" } ?? ""
+                let roomCount = (frame["rooms"] as? [[String: Any]]).map { " rooms=\($0.count)" } ?? ""
+                FileHandle.standardError.write(Data(
+                    "[PiMobile][RemotePi] receive control=\(type)\(code)\(roomCount)\n".utf8
+                ))
+#endif
                 if type == "error" {
                     throw RemotePiError.remote((frame["message"] as? String) ?? "Remote Pi relay error.")
                 }
@@ -114,12 +143,23 @@ actor RemotePiConnection {
                   let inner = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 continue
             }
+#if DEBUG
+            let innerType = (inner["type"] as? String) ?? "unknown"
+            FileHandle.standardError.write(Data(
+                "[PiMobile][RemotePi] receive inner=\(innerType) room=\(configuration.peer.roomID)\n".utf8
+            ))
+#endif
             return .message(inner)
         }
         throw RemotePiError.connectionClosed
     }
 
     func close() {
+#if DEBUG
+        FileHandle.standardError.write(Data(
+            "[PiMobile][RemotePi] closing room=\(configuration.peer.roomID)\n".utf8
+        ))
+#endif
         heartbeatTask?.cancel()
         heartbeatTask = nil
         socket?.cancel(with: .goingAway, reason: nil)

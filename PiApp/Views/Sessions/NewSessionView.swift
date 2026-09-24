@@ -3,9 +3,11 @@ import SwiftUI
 struct NewSessionView: View {
     @Environment(AppModel.self) private var model
     @State private var selectedBackend: BackendKind
+    @State private var selectedRemotePeerID: String?
 
     init(initialBackend: BackendKind) {
         _selectedBackend = State(initialValue: initialBackend)
+        _selectedRemotePeerID = State(initialValue: nil)
     }
 
     var body: some View {
@@ -65,9 +67,20 @@ struct NewSessionView: View {
 
                 case .remotePi:
                     Section("Remote Pi") {
-                        if let peer = model.remotePiStore.peer {
-                            LabeledContent("Session", value: peer.sessionName)
-                            LabeledContent("Model", value: model.remotePiStore.activeModelName ?? "Detecting…")
+                        if !model.remotePiStore.peers.isEmpty {
+                            Picker("Paired Pi", selection: $selectedRemotePeerID) {
+                                ForEach(model.remotePiStore.peers) { peer in
+                                    Text("\(peer.sessionName) · \(peer.roomID)")
+                                        .tag(peer.id as String?)
+                                }
+                            }
+                            if let peer = model.remotePiStore.peer(id: selectedRemotePeerID) {
+                                LabeledContent("Room", value: peer.roomID)
+                                LabeledContent(
+                                    "Model",
+                                    value: model.remotePiStore.activeModelName(for: peer.id) ?? "Detecting…"
+                                )
+                            }
                         } else {
                             Label("Pair Remote Pi in Settings before creating this session.",
                                   systemImage: "exclamationmark.triangle")
@@ -99,7 +112,10 @@ struct NewSessionView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") {
-                        model.createSession(backend: selectedBackend)
+                        model.createSession(
+                            backend: selectedBackend,
+                            remotePiPeerID: selectedRemotePeerID
+                        )
                     }
                     .disabled(!canCreate)
                 }
@@ -107,12 +123,17 @@ struct NewSessionView: View {
         }
         .tint(theme.accent)
         .presentationDetents([.medium, .large])
+        .onAppear {
+            if selectedRemotePeerID == nil {
+                selectedRemotePeerID = model.remotePiStore.selectedPeerID
+            }
+        }
     }
 
     private var canCreate: Bool {
         switch selectedBackend {
         case .remotePi:
-            return model.remotePiStore.isPaired
+            return model.remotePiStore.peer(id: selectedRemotePeerID) != nil
         case .webSocket:
             guard let url = URL(string: model.serverURL),
                   let scheme = url.scheme?.lowercased() else { return false }

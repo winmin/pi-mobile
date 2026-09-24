@@ -14,71 +14,102 @@ struct RemotePiSettingsView: View {
 
         Form {
             Section("Connection") {
-                TextField("Relay URL", text: $store.relayURL)
+                TextField("Relay URL for new pairings", text: $store.relayURL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.system(.body, design: .monospaced))
-                Text("The public Remote Pi relay is used by default. You can enter your self-hosted relay here.")
+                Text("The public Remote Pi relay is used by default. Each paired Pi keeps the relay that was used when it was added.")
                     .font(.caption)
                     .foregroundStyle(theme.textMuted)
             }
             .listRowBackground(theme.surface)
 
-            if let peer = store.peer {
+            if !store.peers.isEmpty {
                 Section("Paired Pi") {
-                    LabeledContent("Session", value: peer.sessionName)
-                    LabeledContent("Room", value: peer.roomID)
-                    if let activeModel = store.activeModelName {
-                        LabeledContent("Model", value: activeModel)
-                    }
-                    LabeledContent("Paired", value: peer.pairedAt.formatted(date: .abbreviated, time: .shortened))
-                    Button("Use Remote Pi backend") {
-                        model.backend = .remotePi
-                    }
-                    Button("Forget on this iPhone", role: .destructive) {
-                        store.forgetPairing()
-                        if model.backend == .remotePi {
-                            model.backend = .directAPI
+                    ForEach(store.peers) { peer in
+                        HStack(alignment: .top, spacing: 12) {
+                            Button {
+                                model.setDefaultRemotePiPeer(peer.id)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 6) {
+                                        Text(peer.sessionName)
+                                            .font(.body.weight(.medium))
+                                            .foregroundStyle(theme.textPrimary)
+                                        if store.selectedPeerID == peer.id {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundStyle(theme.accent)
+                                        }
+                                    }
+                                    Text("Room \(peer.roomID)")
+                                        .font(.caption)
+                                        .foregroundStyle(theme.textSecondary)
+                                    Text(store.activeModelName(for: peer.id) ?? peer.relayURL)
+                                        .font(.caption2)
+                                        .foregroundStyle(theme.textMuted)
+                                        .lineLimit(1)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+
+                            Menu {
+                                Button("Use for active session") {
+                                    model.useRemotePiPeerForActiveSession(peer.id)
+                                }
+                                Button("Forget on this iPhone", role: .destructive) {
+                                    model.forgetRemotePiPeer(peer.id)
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                                    .font(.title3)
+                                    .foregroundStyle(theme.textSecondary)
+                            }
                         }
                     }
-                }
-                .listRowBackground(theme.surface)
-            } else {
-                Section("Pair") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("1. Install the extension on your computer:")
-                        Text("pi install npm:remote-pi")
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
-                        Text("2. In Pi run `/remote-pi`, then `/remote-pi pair`.")
-                        Text("3. Scan its QR code or paste the pairing link below.")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(theme.textSecondary)
 
-                    Button {
-                        showScanner = true
-                    } label: {
-                        Label("Scan pairing QR", systemImage: "qrcode.viewfinder")
-                    }
-
-                    TextField("remotepi://pair?…", text: $pairingCode, axis: .vertical)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(.caption, design: .monospaced))
-                        .lineLimit(2...5)
-
-                    Button("Paste from Clipboard") {
-                        pairingCode = UIPasteboard.general.string ?? ""
-                    }
-
-                    Button(store.isPairing ? "Pairing…" : "Pair") {
-                        beginPairing()
-                    }
-                    .disabled(store.isPairing || pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Text("The checked Pi is the default for new sessions. Use the menu to assign a Pi to the active session.")
+                        .font(.caption)
+                        .foregroundStyle(theme.textMuted)
                 }
                 .listRowBackground(theme.surface)
             }
+
+            Section(store.peers.isEmpty ? "Pair" : "Add another Pi") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("1. Install the extension on your computer:")
+                    Text("pi install npm:remote-pi")
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                    Text("2. In Pi run `/remote-pi`, then `/remote-pi pair`.")
+                    Text("3. Scan its QR code or paste the pairing link below.")
+                }
+                .font(.caption)
+                .foregroundStyle(theme.textSecondary)
+
+                Button {
+                    showScanner = true
+                } label: {
+                    Label("Scan pairing QR", systemImage: "qrcode.viewfinder")
+                }
+
+                TextField("remotepi://pair?…", text: $pairingCode, axis: .vertical)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(2...5)
+
+                Button("Paste from Clipboard") {
+                    pairingCode = UIPasteboard.general.string ?? ""
+                }
+
+                Button(store.isPairing ? "Pairing…" : "Pair") {
+                    beginPairing()
+                }
+                .disabled(store.isPairing || pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .listRowBackground(theme.surface)
 
             if let successMessage {
                 Section {
@@ -128,7 +159,10 @@ struct RemotePiSettingsView: View {
         Task {
             do {
                 let peer = try await model.remotePiStore.pair(using: code)
-                model.backend = .remotePi
+                model.setDefaultRemotePiPeer(peer.id)
+                if model.activeSession == nil {
+                    model.backend = .remotePi
+                }
                 successMessage = "Paired with \(peer.sessionName)."
                 pairingCode = ""
             } catch {

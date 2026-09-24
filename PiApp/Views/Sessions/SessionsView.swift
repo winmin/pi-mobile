@@ -71,7 +71,7 @@ struct SessionsView: View {
                         .font(.callout)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
-                    Text("\(session.model) · \(session.updatedAt.relativeShort) · \(formatTokenCount(session.usage.total)) tokens · \(formatCost(session.usage.costUSD))")
+                    Text("\(sessionEndpoint(session)) · \(session.updatedAt.relativeShort) · \(formatTokenCount(session.usage.total)) tokens · \(formatCost(session.usage.costUSD))")
                         .font(.caption2)
                         .foregroundStyle(theme.textMuted)
                         .lineLimit(1)
@@ -100,6 +100,25 @@ struct SessionsView: View {
             .tint(.orange)
         }
         .contextMenu {
+            if !model.remotePiStore.peers.isEmpty {
+                Menu {
+                    ForEach(model.remotePiStore.peers) { peer in
+                        Button {
+                            model.assignRemotePiPeer(peer.id, to: session.id)
+                        } label: {
+                            Label(
+                                "\(peer.sessionName) · \(peer.roomID)",
+                                systemImage: session.backend == .remotePi
+                                    && session.remotePiPeerID == peer.id
+                                    ? "checkmark.circle.fill"
+                                    : "desktopcomputer"
+                            )
+                        }
+                    }
+                } label: {
+                    Label("Run with Remote Pi", systemImage: "desktopcomputer.and.arrow.down")
+                }
+            }
             Button {
                 renameText = session.title
                 renameTarget = session
@@ -117,6 +136,17 @@ struct SessionsView: View {
                 Label("Delete", systemImage: "trash")
             }
         }
+    }
+
+    private func sessionEndpoint(_ session: ChatSession) -> String {
+        guard session.backend == .remotePi else { return session.model }
+        guard let peer = model.remotePiStore.peer(id: session.remotePiPeerID) else {
+            return "Remote Pi unavailable"
+        }
+        if let remoteModel = model.remotePiStore.activeModelName(for: peer.id) {
+            return "\(peer.sessionName) · \(remoteModel)"
+        }
+        return peer.sessionName
     }
 }
 

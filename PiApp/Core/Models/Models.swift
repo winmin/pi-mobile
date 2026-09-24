@@ -147,6 +147,9 @@ struct ChatSession: Identifiable, Equatable, Codable {
     var model: String
     /// Nil only for sessions saved before per-session backend selection was added.
     var backend: BackendKind?
+    /// Stable RemotePiPeer.id selected for this session. It is retained if the
+    /// backend changes so switching back to Remote Pi restores the same peer.
+    var remotePiPeerID: String?
     var messages: [ChatMessage]
     var status: SessionStatus
     var usage: TokenUsage
@@ -156,6 +159,7 @@ struct ChatSession: Identifiable, Equatable, Codable {
 
     init(id: UUID = UUID(), title: String, project: String, model: String,
          backend: BackendKind? = nil,
+         remotePiPeerID: String? = nil,
          messages: [ChatMessage] = [], status: SessionStatus = .idle,
          usage: TokenUsage = TokenUsage(), createdAt: Date = Date(),
          updatedAt: Date = Date(), isArchived: Bool = false) {
@@ -164,6 +168,7 @@ struct ChatSession: Identifiable, Equatable, Codable {
         self.project = project
         self.model = model
         self.backend = backend
+        self.remotePiPeerID = remotePiPeerID
         self.messages = messages
         self.status = status
         self.usage = usage

@@ -19,7 +19,7 @@ Chat directly against your own LLM providers with streaming, manage sessions, tr
   - **ChatGPT (OpenAI Codex)** — device code flow plus the Codex Responses streaming adapter
   - Credentials stored in the iOS Keychain, tokens auto-refresh before expiry
 - **Sessions** — grouped by project, rename / archive / delete, per-session token usage
-- **Remote Pi plugin** — pair by QR with `remote-pi`, then stream replies and tool activity from the Pi session running on your computer
+- **Remote Pi plugin** — pair multiple computers by QR with `remote-pi`, then choose the Remote Pi used by each app session
 - **Session persistence** — conversations are saved locally (JSON in Application Support) and survive app restarts; active session is restored
 - **Timeline** — a real activity log of your prompts, responses, tool calls and approvals (persisted locally)
 - **Home dashboard** — sessions / tokens / cost stats, activity heatmap, per-model usage — all computed from your actual usage
@@ -66,7 +66,9 @@ If you chat before configuring a provider, the assistant will point you to Setti
 ## Connect the Remote Pi plugin
 
 The existing **Remote (WebSocket)** backend remains available. The Remote Pi
-plugin is a separate backend with its own pairing flow:
+plugin is a separate backend with its own pairing flow. This integration and
+the app icon use the official [`remote-pi` package](https://pi.dev/packages/remote-pi)
+and its published brand assets.
 
 1. On the computer running Pi, install the extension: `pi install npm:remote-pi`
 2. In Pi run `/remote-pi`, then `/remote-pi pair`
@@ -74,7 +76,12 @@ plugin is a separate backend with its own pairing flow:
 4. Scan the QR code (or paste its `remotepi://` link)
 
 The relay URL defaults to Remote Pi's public relay and can be changed for a
-self-hosted relay before pairing.
+self-hosted relay before pairing. Repeat the pairing flow to add more Remote Pi
+peers. When creating a session, choose its paired Pi from the **Remote Pi**
+picker. That choice is stored with the session; switching sessions reconnects
+to the corresponding Pi. You can reassign the active session from a peer's menu
+under **Settings → Remote Pi Plugin**, or long-press any row in **Sessions** and
+choose **Run with Remote Pi**.
 
 ## Architecture
 
