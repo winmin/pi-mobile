@@ -67,11 +67,11 @@ If you chat before configuring a provider, the assistant will point you to Setti
 
 Two LAN-direct options, no relay involved:
 
-**pi-lan-bridge extension (recommended)** — runs inside your pi/omp process,
+**pi-mobile-bridge extension (recommended)** — runs inside your pi/omp process,
 sharing the agent's live session, credentials and tools:
 
 ```bash
-pi install ./extension        # see extension/README.md
+pi install npm:pi-mobile-bridge        # or `pi install ./extension` from a checkout
 ```
 
 **pi-bridge script** — a standalone zero-config bridge that spawns

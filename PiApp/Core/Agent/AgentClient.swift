@@ -29,6 +29,13 @@ struct ChatTurn: Equatable {
 protocol AgentClient: AnyObject {
     var events: AsyncStream<AgentEvent> { get }
     func sendPrompt(_ text: String, history: [ChatTurn], permission: PermissionMode) async
+    func setPermissionMode(_ mode: PermissionMode) async
     func answerPermission(allow: Bool) async
     func abort() async
+    func shutdown() async
+}
+
+extension AgentClient {
+    func setPermissionMode(_ mode: PermissionMode) async {}
+    func shutdown() async { await abort() }
 }

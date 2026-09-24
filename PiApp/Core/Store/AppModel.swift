@@ -65,7 +65,13 @@ final class AppModel {
         didSet { UserDefaults.standard.set(activeSessionID?.uuidString, forKey: "activeSessionID") }
     }
     var permissionMode: PermissionMode {
-        didSet { UserDefaults.standard.set(permissionMode.rawValue, forKey: "permissionMode") }
+        didSet {
+            UserDefaults.standard.set(permissionMode.rawValue, forKey: "permissionMode")
+            for runtime in sessionRuntimes.values {
+                let client = runtime.client
+                Task { await client.setPermissionMode(permissionMode) }
+            }
+        }
     }
 
     var activeSession: ChatSession? {
@@ -106,8 +112,13 @@ final class AppModel {
 
     // MARK: Agent backend
     private(set) var client: any AgentClient
-    private var eventTask: Task<Void, Never>?
-    private var responseBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private struct SessionRuntime {
+        let client: any AgentClient
+        let eventTask: Task<Void, Never>
+        let backend: BackendKind
+    }
+    private var sessionRuntimes: [UUID: SessionRuntime] = [:]
+    private var responseBackgroundTasks: [UUID: UIBackgroundTaskIdentifier] = [:]
     private var wasAppBackgrounded = false
 
     // MARK: AI providers
@@ -140,6 +151,26 @@ final class AppModel {
         if let data = try? JSONEncoder().encode(sessions) {
             try? data.write(to: Self.sessionsFileURL, options: .atomic)
         }
+    }
+
+    /// An iOS process cannot reattach to its former HTTP stream or socket.
+    /// Keep any partial answer and make the session usable again after launch.
+    private func recoverInterruptedSessions() {
+        var changed = false
+        for index in sessions.indices {
+            let last = sessions[index].messages.indices.last
+            let wasStreaming = last.map { sessions[index].messages[$0].isStreaming } ?? false
+            guard sessions[index].status != .idle || wasStreaming else { continue }
+            sessions[index].status = .idle
+            if let last, wasStreaming {
+                sessions[index].messages[last].isStreaming = false
+                sessions[index].messages[last].blocks.append(.text(
+                    "⚠️ The response was interrupted when the app closed. Send another message to continue."
+                ))
+            }
+            changed = true
+        }
+        if changed { persistSessions() }
     }
 
     private func migrateLegacyRemotePiSessions() {
@@ -187,6 +218,7 @@ final class AppModel {
         fileTree = MockData.fileTree
         client = MockAgentClient()
         activeSessionID = sessions.first?.id
+        recoverInterruptedSessions()
         rebuildDerived()
         if let savedID = defaults.string(forKey: "activeSessionID"),
            sessions.contains(where: { $0.id.uuidString == savedID }) {
@@ -250,45 +282,96 @@ final class AppModel {
 
     // MARK: - Backend wiring
 
-    func reconnect() {
-        eventTask?.cancel()
-        let previousRemoteClient = client as? RemotePiAgentClient
-        var remoteClientToPrepare: RemotePiAgentClient?
+    func reconnect(force: Bool = false) {
+        guard let sessionID = activeSessionID else {
+            for id in Array(sessionRuntimes.keys) { removeRuntime(for: id) }
+            client = MockAgentClient()
+            return
+        }
+
+        if force || sessionRuntimes[sessionID]?.backend != backend {
+            if sessionRuntimes[sessionID] != nil {
+                interruptResponse(in: sessionID, reason: "The connection was restarted.")
+                removeRuntime(for: sessionID)
+            }
+        }
+        if let existing = sessionRuntimes[sessionID] {
+            client = existing.client
+            closeInactiveRuntimes()
+            return
+        }
+
+        let predecessor = client as? RemotePiAgentClient
+        let newClient: any AgentClient
         switch backend {
         case .directAPI:
-            client = LLMChatClient(providerStore: providerStore)
+            newClient = LLMChatClient(providerStore: providerStore)
         case .webSocket:
             if let url = URL(string: serverURL) {
-                client = WebSocketAgentClient(url: url)
+                newClient = WebSocketAgentClient(url: url)
             } else {
-                client = MockAgentClient()
+                newClient = MockAgentClient()
             }
         case .remotePi:
-            let peerID = activeSession?.remotePiPeerID
-                ?? remotePiStore.selectedPeerID
-                ?? ""
-            let remoteClient = RemotePiAgentClient(
-                store: remotePiStore,
-                peerID: peerID,
-                predecessor: previousRemoteClient
-            )
-            client = remoteClient
-            remoteClientToPrepare = remoteClient
+            let peerID = activeSession?.remotePiPeerID ?? remotePiStore.selectedPeerID ?? ""
+            newClient = RemotePiAgentClient(store: remotePiStore, peerID: peerID,
+                                            predecessor: predecessor)
         }
-        if backend != .remotePi, let previousRemoteClient {
-            Task { await previousRemoteClient.shutdown() }
-        }
-        let events = client.events
-        eventTask = Task { [weak self] in
+        client = newClient
+        let events = newClient.events
+        let eventTask = Task { [weak self] in
             for await event in events {
                 guard let self else { return }
-                self.handle(event)
+                self.handle(event, in: sessionID)
             }
         }
-        let activePeerID = activeSession?.remotePiPeerID ?? remotePiStore.selectedPeerID
-        if remotePiStore.peer(id: activePeerID) != nil, let remoteClientToPrepare {
-            Task { await remoteClientToPrepare.prepare() }
+        sessionRuntimes[sessionID] = SessionRuntime(client: newClient,
+                                                    eventTask: eventTask, backend: backend)
+        let mode = permissionMode
+        Task { await newClient.setPermissionMode(mode) }
+        closeInactiveRuntimes()
+
+        if let remoteClient = newClient as? RemotePiAgentClient,
+           remotePiStore.peer(id: activeSession?.remotePiPeerID ?? remotePiStore.selectedPeerID) != nil {
+            Task { await remoteClient.prepare() }
         }
+    }
+
+    private func removeRuntime(for sessionID: UUID) {
+        guard let runtime = sessionRuntimes.removeValue(forKey: sessionID) else { return }
+        runtime.eventTask.cancel()
+        endResponseBackgroundTask(for: sessionID)
+        Task {
+            await runtime.client.abort()
+            await runtime.client.shutdown()
+        }
+    }
+
+    private func closeInactiveRuntimes() {
+        for id in Array(sessionRuntimes.keys) where id != activeSessionID {
+            guard let runtime = sessionRuntimes[id] else { continue }
+            let status = sessions.first(where: { $0.id == id })?.status
+            let isRunning = status == .running || status == .waitingApproval
+            if runtime.backend == .remotePi && isRunning {
+                interruptResponse(in: id, reason: "Remote Pi disconnected when switching sessions.")
+            }
+            if runtime.backend == .remotePi || !isRunning {
+                removeRuntime(for: id)
+            }
+        }
+    }
+
+    private func interruptResponse(in sessionID: UUID, reason: String) {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
+              sessions[index].status != .idle else { return }
+        sessions[index].status = .idle
+        if let last = sessions[index].messages.indices.last,
+           sessions[index].messages[last].isStreaming {
+            sessions[index].messages[last].isStreaming = false
+            sessions[index].messages[last].blocks.append(.text("⚠️ \(reason)"))
+        }
+        endResponseBackgroundTask(for: sessionID)
+        persistSessions()
     }
 
     func applicationDidEnterBackground() {
@@ -368,6 +451,7 @@ final class AppModel {
         guard activeSessionID == sessionID else { return }
         remotePiStore.selectPeer(id: peerID)
         backend = .remotePi
+        reconnect(force: true)
     }
 
     func useRemotePiPeerForActiveSession(_ peerID: String) {
@@ -383,14 +467,16 @@ final class AppModel {
         remotePiStore.forgetPairing(id: peerID)
         if activeSession?.backend == .remotePi,
            activeSession?.remotePiPeerID == peerID {
-            reconnect()
+            reconnect(force: true)
         }
     }
 
     func deleteSession(_ session: ChatSession) {
+        removeRuntime(for: session.id)
         sessions.removeAll { $0.id == session.id }
         if activeSessionID == session.id {
             activeSessionID = sessions.first?.id
+            backend = activeSession?.backend ?? .directAPI
         }
         persistSessions()
     }
@@ -446,6 +532,7 @@ final class AppModel {
                     "⚠️ No AI provider configured yet. Open **Settings → AI Providers** to add an API key or sign in, then try again."))
                 sessions[idx].messages[last].isStreaming = false
                 sessions[idx].status = .idle
+                persistSessions()
                 return
             }
         }
@@ -462,9 +549,10 @@ final class AppModel {
             }
         }
 
+        if sessionRuntimes[activeSessionID ?? UUID()] == nil { reconnect() }
         let client = self.client
         let permission = permissionMode
-        beginResponseBackgroundTask()
+        beginResponseBackgroundTask(for: sessions[idx].id)
         Task { await client.sendPrompt(text, history: history, permission: permission) }
     }
 
@@ -488,22 +576,23 @@ final class AppModel {
     }
 
     func abort() {
-        let client = self.client
-        Task { await client.abort() }
-        endResponseBackgroundTask()
         guard let idx = sessions.firstIndex(where: { $0.id == activeSessionID }) else { return }
+        removeRuntime(for: sessions[idx].id)
         sessions[idx].status = .idle
         if let last = sessions[idx].messages.indices.last, sessions[idx].messages[last].isStreaming {
             sessions[idx].messages[last].isStreaming = false
         }
         persistSessions()
+        reconnect()
     }
 
     // MARK: - Event handling
 
-    private func handle(_ event: AgentEvent) {
-        guard let sIdx = sessions.firstIndex(where: { $0.id == activeSessionID }) else { return }
-        guard let mIdx = sessions[sIdx].messages.lastIndex(where: { $0.role == .assistant }) else { return }
+    private func handle(_ event: AgentEvent, in sessionID: UUID) {
+        guard let sIdx = sessions.firstIndex(where: { $0.id == sessionID }),
+              sessions[sIdx].status != .idle else { return }
+        guard let mIdx = sessions[sIdx].messages.lastIndex(where: { $0.role == .assistant }),
+              sessions[sIdx].messages[mIdx].isStreaming else { return }
 
         switch event {
         case .thinkingDelta(let chunk):
@@ -535,7 +624,7 @@ final class AppModel {
                 generator.notificationOccurred(.warning)
             }
         case .messageFinished(let usage):
-            endResponseBackgroundTask()
+            endResponseBackgroundTask(for: sessionID)
             sessions[sIdx].messages[mIdx].isStreaming = false
             sessions[sIdx].status = .idle
             sessions[sIdx].usage.input += usage.input
@@ -547,13 +636,15 @@ final class AppModel {
                    session: sessions[sIdx].title)
             rebuildDerived()
             persistSessions()
+            if sessionID != activeSessionID { removeRuntime(for: sessionID) }
         case .failed(let message):
-            endResponseBackgroundTask()
+            endResponseBackgroundTask(for: sessionID)
             sessions[sIdx].messages[mIdx].isStreaming = false
             sessions[sIdx].messages[mIdx].blocks.append(.text("⚠️ \(message)"))
             sessions[sIdx].status = .idle
             record(.error, "Chat error", detail: message, session: sessions[sIdx].title)
             persistSessions()
+            if sessionID != activeSessionID { removeRuntime(for: sessionID) }
         }
     }
 
@@ -562,21 +653,21 @@ final class AppModel {
     /// Gives an in-flight SSE response a short grace period when the user
     /// switches apps. iOS still controls the deadline; longer work is recovered
     /// by LLMChatClient when the app becomes active again.
-    private func beginResponseBackgroundTask() {
-        endResponseBackgroundTask()
-        responseBackgroundTask = UIApplication.shared.beginBackgroundTask(
+    private func beginResponseBackgroundTask(for sessionID: UUID) {
+        endResponseBackgroundTask(for: sessionID)
+        responseBackgroundTasks[sessionID] = UIApplication.shared.beginBackgroundTask(
             withName: "Finish AI response"
         ) { [weak self] in
             Task { @MainActor [weak self] in
-                self?.endResponseBackgroundTask()
+                self?.endResponseBackgroundTask(for: sessionID)
             }
         }
     }
 
-    private func endResponseBackgroundTask() {
-        guard responseBackgroundTask != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(responseBackgroundTask)
-        responseBackgroundTask = .invalid
+    private func endResponseBackgroundTask(for sessionID: UUID) {
+        guard let task = responseBackgroundTasks.removeValue(forKey: sessionID),
+              task != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(task)
     }
 
     private enum BlockKind { case text, thinking }

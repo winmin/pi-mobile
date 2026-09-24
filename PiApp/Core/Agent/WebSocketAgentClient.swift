@@ -19,6 +19,8 @@ final class WebSocketAgentClient: AgentClient {
 
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
+    private var receiveTask: Task<Void, Never>?
+    private var isShutDown = false
     private var pendingCalls: [String: UUID] = [:]
 
     init(url: URL) {
@@ -31,7 +33,7 @@ final class WebSocketAgentClient: AgentClient {
         let task = session.webSocketTask(with: url)
         self.task = task
         task.resume()
-        Task { await receiveLoop() }
+        receiveTask = Task { [weak self] in await self?.receiveLoop() }
     }
 
     func sendPrompt(_ text: String, history: [ChatTurn], permission: PermissionMode) async {
@@ -46,13 +48,30 @@ final class WebSocketAgentClient: AgentClient {
         await send(["type": "permission_answer", "allow": allow])
     }
 
+    func setPermissionMode(_ mode: PermissionMode) async {
+        await send(["type": "set_permission_mode", "permission": mode.rawValue])
+    }
+
     func abort() async {
         await send(["type": "abort"])
+    }
+
+    func shutdown() async {
+        guard !isShutDown else { return }
+        isShutDown = true
+        receiveTask?.cancel()
+        receiveTask = nil
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        session?.invalidateAndCancel()
+        session = nil
+        continuation.finish()
     }
 
     // MARK: - Plumbing
 
     private func send(_ object: [String: Any]) async {
+        guard !isShutDown else { return }
         guard let data = try? JSONSerialization.data(withJSONObject: object),
               let string = String(data: data, encoding: .utf8) else { return }
         try? await task?.send(.string(string))
@@ -74,7 +93,9 @@ final class WebSocketAgentClient: AgentClient {
                     break
                 }
             } catch {
-                continuation.yield(.failed(error.localizedDescription))
+                if !isShutDown && !Task.isCancelled {
+                    continuation.yield(.failed(error.localizedDescription))
+                }
                 return
             }
         }

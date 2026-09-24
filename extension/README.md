@@ -1,10 +1,10 @@
-# pi-lan-bridge
+# pi-mobile-bridge
 
-A pi/omp extension that serves your agent to the **Pi iOS app** over the local
-network — no relay, no cloud, nothing leaves your LAN.
+A pi/omp extension that serves your agent to the **Pi Mobile iOS app** over
+the local network — no relay, no cloud, nothing leaves your LAN.
 
 ```
-iPhone App ──LAN WebSocket──> pi-lan-bridge (inside pi/omp) ──> AgentSession
+iPhone App ──LAN WebSocket──> pi-mobile-bridge (inside pi/omp) ──> AgentSession
 ```
 
 Unlike a subprocess bridge, the extension runs **inside** your pi/omp process:
@@ -13,17 +13,17 @@ it shares the agent's session, credentials, tools and model configuration.
 ## Install
 
 ```bash
-# from a local checkout (loads in place, no copying)
+# from npm (recommended)
+pi install npm:pi-mobile-bridge
+
+# from a local checkout (loads in place; run npm install && npm run build first)
 pi install ./extension
 
-# or one-shot without touching settings
-pi --extension ./extension/src/index.ts
+# one-shot without touching settings
+pi --extension ./extension/dist/index.js
 ```
 
-For local/path installs, run `npm install` inside `extension/` first (the `ws`
-dependency). For npm/git installs pi installs dependencies automatically.
-
-On omp, drop the file into `~/.omp/agent/extensions/` (omp shares pi's
+On omp, drop `dist/index.js` into `~/.omp/agent/extensions/` (omp shares pi's
 extension API) or point `omp --extension` at it.
 
 ## Use
@@ -31,9 +31,9 @@ extension API) or point `omp --extension` at it.
 The bridge starts automatically with the session. Control it from pi:
 
 ```
-/lanbridge status          # listening URL + connected clients
-/lanbridge start|stop
-/lanbridge port 8888
+/mobilebridge status          # listening URL + connected clients
+/mobilebridge start|stop
+/mobilebridge port 8888
 ```
 
 In the app: **Settings → Agent → Backend → Remote (WebSocket)** → enter the
@@ -49,6 +49,13 @@ must be on the same network.
   `glob`, `ls`, `find` are auto-approved. With no app connected, the local UI
   handles approvals as usual.
 - Abort (Stop button), real token usage + cost per response
+
+## Develop
+
+```bash
+npm install
+npm run build        # esbuild: src/index.ts -> dist/index.js (ws external)
+```
 
 ## Notes
 

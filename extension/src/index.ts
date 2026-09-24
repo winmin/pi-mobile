@@ -1,12 +1,12 @@
 /**
- * pi-lan-bridge — a pi/omp extension that serves this agent to the Pi iOS app
- * over the local network. No relay, no cloud: the extension opens a WebSocket
- * server inside the pi process and translates the app's wire protocol to the
- * extension API.
+ * pi-mobile-bridge — a pi/omp extension that serves this agent to the Pi iOS
+ * app over the local network. No relay, no cloud: the extension opens a
+ * WebSocket server inside the pi process and translates the app's wire
+ * protocol to the extension API.
  *
- *   iPhone App ──LAN WebSocket──> pi-lan-bridge (inside pi) ──> AgentSession
+ *   iPhone App ──LAN WebSocket──> pi-mobile-bridge (inside pi) ──> AgentSession
  *
- * Commands: /lanbridge start | stop | status | port <n>
+ * Commands: /mobilebridge start | stop | status | port <n>
  */
 import { createServer, type Server } from "node:http"
 import os from "node:os"
@@ -255,8 +255,8 @@ export default function (pi: ExtensionAPI) {
 
   // ---------- /lanbridge command ----------
 
-  pi.registerCommand("lanbridge", {
-    description: "LAN bridge for the Pi iOS app. Usage: /lanbridge start|stop|status|port <n>",
+  pi.registerCommand("mobilebridge", {
+    description: "Mobile bridge for the Pi iOS app. Usage: /mobilebridge start|stop|status|port <n>",
     handler: async (args, ctx) => {
       const [sub, value] = args.trim().split(/\s+/, 2)
       switch (sub ?? "status") {
@@ -271,7 +271,7 @@ export default function (pi: ExtensionAPI) {
         case "port": {
           const n = Number(value)
           if (!Number.isInteger(n) || n < 1024 || n > 65535) {
-            ctx.ui.notify("Usage: /lanbridge port <1024-65535>", "warning")
+            ctx.ui.notify("Usage: /mobilebridge port <1024-65535>", "warning")
             break
           }
           port = n
